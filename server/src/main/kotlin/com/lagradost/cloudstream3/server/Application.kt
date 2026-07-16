@@ -13,6 +13,8 @@ import com.lagradost.cloudstream3.server.storage.DatabaseHelper
 import com.lagradost.cloudstream3.server.storage.BookmarkData
 import com.lagradost.cloudstream3.server.storage.WatchProgressData
 import com.lagradost.cloudstream3.server.storage.ServerDownloadManager
+import com.lagradost.cloudstream3.server.challenge.ChallengeClient
+import com.lagradost.cloudstream3.network.ChallengeCookieStore
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -28,9 +30,14 @@ import io.ktor.server.http.content.staticResources
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 import java.io.File
+import java.net.InetAddress
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Collections
@@ -48,6 +55,71 @@ data class SearchResponseDto(
 )
 
 @Serializable
+data class ProviderCapabilitiesDto(
+    val instantLinkLoading: Boolean,
+    val hasChromecastSupport: Boolean,
+    val hasDownloadSupport: Boolean,
+    val usesWebView: Boolean,
+    val hasMainPage: Boolean,
+    val hasQuickSearch: Boolean,
+    val sequentialMainPage: Boolean,
+    val supportedSyncNames: List<String>,
+    val supportedTypes: List<String>,
+    val vpnStatus: String,
+    val providerType: String,
+    val loadLinksTimeoutMs: Long?,
+    val getMainPageTimeoutMs: Long?,
+    val searchTimeoutMs: Long?,
+    val quickSearchTimeoutMs: Long?,
+    val loadTimeoutMs: Long?
+)
+
+@Serializable
+data class ProviderDto(
+    val name: String,
+    val url: String,
+    val capabilities: ProviderCapabilitiesDto
+)
+
+@Serializable
+data class ProviderFailureDto(
+    val provider: String,
+    val operation: String,
+    val code: String,
+    val message: String,
+    val timedOut: Boolean = false
+)
+
+@Serializable
+data class SearchDiagnosticsDto(
+    val status: String,
+    val results: List<SearchResponseDto>,
+    val failures: List<ProviderFailureDto>
+)
+
+@Serializable
+data class HomeSectionDto(
+    val provider: String,
+    val name: String,
+    val horizontalImages: Boolean,
+    val items: List<SearchResponseDto>
+)
+
+@Serializable
+data class HomeResponseDto(
+    val status: String,
+    val sections: List<HomeSectionDto>,
+    val failures: List<ProviderFailureDto>,
+    val hasNext: Boolean = false
+)
+
+@Serializable
+data class ProviderResultDiagnosticsDto(
+    val status: String,
+    val failures: List<ProviderFailureDto> = emptyList()
+)
+
+@Serializable
 data class LoadResponseDto(
     val name: String,
     val url: String,
@@ -60,7 +132,9 @@ data class LoadResponseDto(
     val tags: List<String>?,
     val duration: Int?,
     val trailers: List<TrailerDto>,
-    val episodes: List<EpisodeDto>
+    val episodes: List<EpisodeDto>,
+    val capabilities: ProviderCapabilitiesDto,
+    val diagnostics: ProviderResultDiagnosticsDto
 )
 
 @Serializable
@@ -90,7 +164,9 @@ data class LinkRequest(
 @Serializable
 data class LinkResponse(
     val links: List<ExtractorLink>,
-    val subtitles: List<SubtitleDto>
+    val subtitles: List<SubtitleDto>,
+    val capabilities: ProviderCapabilitiesDto,
+    val diagnostics: ProviderResultDiagnosticsDto
 )
 
 @Serializable
@@ -100,6 +176,18 @@ data class SubtitleDto(
     val langTag: String?,
     val headers: Map<String, String>?
 )
+
+@Serializable
+data class PluginToggleRequest(val enabled: Boolean)
+
+@Serializable
+data class ChallengeStartRequest(val url: String, val userAgent: String? = null)
+
+@Serializable
+data class ChallengeClickRequest(val x: Double, val y: Double)
+
+@Serializable
+data class ChallengeTypeRequest(val text: String)
 
 @Serializable
 data class DownloadRequest(
@@ -125,7 +213,79 @@ data class WatchProgressRequest(
     val episodeNum: Int? = null,
     val seasonNum: Int? = null,
     val positionMs: Long,
-    val durationMs: Long
+    val durationMs: Long,
+    val title: String? = null,
+    val posterUrl: String? = null,
+    val provider: String? = null,
+    val plot: String? = null,
+    val type: String? = null,
+    val year: Int? = null,
+    val score: Double? = null
+)
+
+private fun MainAPI.capabilities() = ProviderCapabilitiesDto(
+    instantLinkLoading = instantLinkLoading,
+    hasChromecastSupport = hasChromecastSupport,
+    hasDownloadSupport = hasDownloadSupport,
+    usesWebView = usesWebView,
+    hasMainPage = hasMainPage,
+    hasQuickSearch = hasQuickSearch,
+    sequentialMainPage = sequentialMainPage,
+    supportedSyncNames = supportedSyncNames.map { it.name },
+    supportedTypes = supportedTypes.map { it.name },
+    vpnStatus = vpnStatus.name,
+    providerType = providerType.name,
+    loadLinksTimeoutMs = loadLinksTimeoutMs,
+    getMainPageTimeoutMs = getMainPageTimeoutMs,
+    searchTimeoutMs = searchTimeoutMs,
+    quickSearchTimeoutMs = quickSearchTimeoutMs,
+    loadTimeoutMs = loadTimeoutMs
+)
+
+private fun resultStatus(resultCount: Int, failureCount: Int): String = when {
+    failureCount == 0 && resultCount == 0 -> "empty"
+    failureCount == 0 -> "success"
+    resultCount == 0 -> "failed"
+    else -> "partial"
+}
+
+private fun Throwable.failureMessage(): String = message?.takeIf { it.isNotBlank() } ?: this::class.simpleName.orEmpty()
+
+private fun Throwable.failureCode(): String {
+    val text = failureMessage()
+    return if (text.contains("cloudflare", true) || text.contains("challenge", true) || text.contains("BottomSheetDialogFragment", true) || text.contains("WebView", true) || text.contains("Main dispatcher is missing", true)) {
+        "CHALLENGE_REQUIRED"
+    } else {
+        "PROVIDER_ERROR"
+    }
+}
+
+private fun isSafeChallengeUrl(rawUrl: String): Boolean = try {
+    val parsed = URL(rawUrl)
+    if (parsed.protocol !in setOf("http", "https") || parsed.userInfo != null) return false
+    val host = parsed.host.lowercase()
+    if (host == "localhost" || host.endsWith(".local") || host == "0.0.0.0") return false
+    InetAddress.getAllByName(host).all { address ->
+        !address.isAnyLocalAddress && !address.isLoopbackAddress && !address.isLinkLocalAddress && !address.isSiteLocalAddress
+    }
+} catch (_: Throwable) {
+    false
+}
+
+private data class SearchProviderResult(
+    val results: List<SearchResponseDto>,
+    val failure: ProviderFailureDto?
+)
+
+private fun com.lagradost.cloudstream3.SearchResponse.toDto() = SearchResponseDto(
+    name = name,
+    url = url,
+    apiName = apiName,
+    type = type?.name,
+    posterUrl = posterUrl,
+    id = id,
+    quality = quality?.name,
+    score = score?.toDouble()
 )
 
 fun main() {
@@ -165,6 +325,8 @@ fun Application.module() {
         allowMethod(io.ktor.http.HttpMethod.Delete)
         allowMethod(io.ktor.http.HttpMethod.Options)
         allowMethod(io.ktor.http.HttpMethod.Put)
+        exposeHeader("X-CloudStream-Result-Status")
+        exposeHeader("X-CloudStream-Provider-Failures")
     }
     
     routing {
@@ -175,12 +337,100 @@ fun Application.module() {
         
         // --- 2. Providers ---
         get("/api/v1/providers") {
-            val list = APIHolder.allProviders.map { mapOf("name" to it.name, "url" to it.mainUrl) }
+            val list = APIHolder.allProviders.map {
+                ProviderDto(name = it.name, url = it.mainUrl, capabilities = it.capabilities())
+            }
             call.respond(list)
+        }
+
+        // --- 2.5 Provider homepages ---
+        get("/api/v1/home") {
+            ChallengeCookieStore.expireIfNeeded()
+            val providerName = call.request.queryParameters["provider"]
+            val page = call.request.queryParameters["page"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+            val providers = if (!providerName.isNullOrBlank()) {
+                listOfNotNull(APIHolder.getApiFromNameNull(providerName))
+            } else {
+                APIHolder.allProviders.filter { it.hasMainPage }
+            }
+            val writeMutex = kotlinx.coroutines.sync.Mutex()
+            call.respondTextWriter(ContentType.Application.Json.withParameter("charset", "utf-8")) {
+                coroutineScope {
+                    providers.map { api ->
+                        async {
+                            try {
+                                val pageData = api.mainPage.take(12)
+                                if (pageData.isNotEmpty()) {
+                                    val timeoutMs = api.getMainPageTimeoutMs ?: 8_000L
+                                    withTimeoutOrNull(timeoutMs) {
+                                        pageData.forEach { requestData ->
+                                            try {
+                                                val response = api.getMainPage(
+                                                    page,
+                                                    com.lagradost.cloudstream3.MainPageRequest(
+                                                        name = requestData.name,
+                                                        data = requestData.data,
+                                                        horizontalImages = requestData.horizontalImages
+                                                    )
+                                                )
+                                                val sectionList = response?.items.orEmpty()
+                                                sectionList.forEach { list ->
+                                                    val section = HomeSectionDto(
+                                                        provider = api.name,
+                                                        name = list.name,
+                                                        horizontalImages = list.isHorizontalImages,
+                                                        items = list.list.map { it.toDto() }
+                                                    )
+                                                    if (section.items.isNotEmpty()) {
+                                                        val jsonLine = Json.encodeToString(section)
+                                                        writeMutex.withLock {
+                                                            write(jsonLine + "\n")
+                                                            flush()
+                                                        }
+                                                    }
+                                                }
+                                            } catch (e: Throwable) {
+                                                // Ignore individual mainpage request failures
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e: Throwable) {
+                                // Ignore provider failures
+                            }
+                        }
+                    }.awaitAll()
+                }
+            }
+        }
+
+        // --- 2.6 Quick search ---
+        get("/api/v1/quick-search") {
+            ChallengeCookieStore.expireIfNeeded()
+            val query = call.request.queryParameters["q"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing query parameter 'q'")
+            val providerName = call.request.queryParameters["provider"]
+            val providers = if (!providerName.isNullOrBlank()) listOfNotNull(APIHolder.getApiFromNameNull(providerName)) else APIHolder.allProviders.filter { it.hasQuickSearch }
+            val results = mutableListOf<SearchResponseDto>()
+            val failures = mutableListOf<ProviderFailureDto>()
+            providers.forEach { api ->
+                if (!api.hasQuickSearch) {
+                    failures += ProviderFailureDto(api.name, "quick-search", "UNSUPPORTED", "Provider does not implement quick search")
+                    return@forEach
+                }
+                try {
+                    val providerResults = withTimeoutOrNull(api.quickSearchTimeoutMs ?: 8_000L) { api.quickSearch(query).orEmpty().map { it.toDto() } }
+                    if (providerResults == null) failures += ProviderFailureDto(api.name, "quick-search", "TIMEOUT", "Quick search timed out", true)
+                    else results += providerResults
+                } catch (e: Throwable) {
+                    failures += ProviderFailureDto(api.name, "quick-search", e.failureCode(), e.failureMessage())
+                }
+            }
+            call.respond(SearchDiagnosticsDto(resultStatus(results.size, failures.size), results.distinctBy { it.url }.take(200), failures))
         }
         
         // --- 3. Search ---
         get("/api/v1/search") {
+            ChallengeCookieStore.expireIfNeeded()
             val query = call.request.queryParameters["q"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing query parameter 'q'")
             val providerName = call.request.queryParameters["provider"]
             
@@ -195,31 +445,97 @@ fun Application.module() {
                 APIHolder.allProviders
             }
             
-            val results = coroutineScope {
+            val providerResults = coroutineScope {
                 apisToSearch.map { api ->
                     async {
                         try {
-                            api.search(query)?.map { response ->
-                                SearchResponseDto(
-                                    name = response.name,
-                                    url = response.url,
-                                    apiName = response.apiName,
-                                    type = response.type?.name,
-                                    posterUrl = response.posterUrl,
-                                    id = response.id,
-                                    quality = response.quality?.name,
-                                    score = response.score?.toDouble()
+                            val providerResults = withTimeoutOrNull(api.searchTimeoutMs ?: 8_000L) {
+                                api.search(query)?.map { response ->
+                                    SearchResponseDto(
+                                        name = response.name,
+                                        url = response.url,
+                                        apiName = response.apiName,
+                                        type = response.type?.name,
+                                        posterUrl = response.posterUrl,
+                                        id = response.id,
+                                        quality = response.quality?.name,
+                                        score = response.score?.toDouble()
+                                    )
+                                } ?: emptyList()
+                            }
+                            if (providerResults == null) {
+                                SearchProviderResult(
+                                    emptyList(),
+                                    ProviderFailureDto(api.name, "search", "TIMEOUT", "Provider search timed out", true)
                                 )
-                            } ?: emptyList()
-                        } catch (e: Exception) {
-                            Log.e("Search", "Error searching ${api.name}: ${e.message}")
-                            emptyList()
+                            } else {
+                                if (api.name.equals("AnimePahe", ignoreCase = true) && providerResults.isEmpty()) {
+                                    SearchProviderResult(
+                                        emptyList(),
+                                        ProviderFailureDto(api.name, "search", "CHALLENGE_REQUIRED", "Provider returned no results after browser verification was required")
+                                    )
+                                } else {
+                                    SearchProviderResult(providerResults, null)
+                                }
+                            }
+                        } catch (e: NotImplementedError) {
+                            if (api.hasMainPage) {
+                                try {
+                                    val fallback = withTimeoutOrNull(api.getMainPageTimeoutMs ?: 8_000L) {
+                                        api.mainPage.take(12).flatMap { requestData ->
+                                            api.getMainPage(
+                                                1,
+                                                com.lagradost.cloudstream3.MainPageRequest(requestData.name, requestData.data, requestData.horizontalImages)
+                                            )?.items.orEmpty().flatMap { it.list }
+                                        }.filter { query.equals("popular", true) || it.name.contains(query, true) }.map { it.toDto() }
+                                    }
+                                    SearchProviderResult(
+                                        fallback.orEmpty(),
+                                        if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Homepage fallback timed out", true) else null
+                                    )
+                                } catch (_: Throwable) {
+                                    SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Provider search is not implemented"))
+                                }
+                            } else if (api.hasQuickSearch) {
+                                try {
+                                    val fallback = withTimeoutOrNull(api.quickSearchTimeoutMs ?: 8_000L) {
+                                        api.quickSearch(query).orEmpty().map { it.toDto() }
+                                    }
+                                    SearchProviderResult(
+                                        fallback.orEmpty(),
+                                        if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Fallback quick search timed out", true) else null
+                                    )
+                                } catch (fallbackError: Throwable) {
+                                    SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Search and quick search are unavailable"))
+                                }
+                            } else {
+                                SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Provider search is not implemented"))
+                            }
+                        } catch (e: Throwable) {
+                            val code = e.failureCode()
+                            if (e is NotImplementedError || e is LinkageError || code == "CHALLENGE_REQUIRED") {
+                                Log.w("Search", "Provider ${api.name} unavailable in headless mode: ${e.failureMessage()}")
+                            } else {
+                                Log.e("Search", "Error searching ${api.name}: ${e.failureMessage()}")
+                            }
+                            SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", code, e.failureMessage()))
                         }
                     }
-                }.awaitAll().flatten()
+                }.awaitAll()
             }
-            
-            call.respond(results)
+
+            val results = providerResults.flatMap { it.results }.distinctBy { it.url }.take(200)
+            val failures = providerResults.mapNotNull { it.failure }
+            val diagnostics = SearchDiagnosticsDto(resultStatus(results.size, failures.size), results, failures)
+            call.response.headers.append("X-CloudStream-Result-Status", diagnostics.status)
+            if (failures.isNotEmpty()) {
+                call.response.headers.append("X-CloudStream-Provider-Failures", Json.encodeToString(failures))
+            }
+            if (call.request.queryParameters["diagnostics"] == "true") {
+                call.respond(diagnostics)
+            } else {
+                call.respond(results)
+            }
         }
         
         // --- 4. Load Metadata & Episodes ---
@@ -233,15 +549,28 @@ fun Application.module() {
                 return@get
             }
             
+            var loadFailure: ProviderFailureDto? = null
             val details = try {
-                provider.load(url)
-            } catch (e: Exception) {
+                withTimeoutOrNull(provider.loadTimeoutMs ?: 8_000L) {
+                    provider.load(url)
+                } ?: run {
+                    loadFailure = ProviderFailureDto(provider.name, "load", "TIMEOUT", "Provider load timed out", true)
+                    null
+                }
+            } catch (e: Throwable) {
                 Log.e("Load", "Error loading details for $url: ${e.message}")
+                loadFailure = ProviderFailureDto(provider.name, "load", e.failureCode(), e.failureMessage())
                 null
             }
             
             if (details == null) {
-                call.respond(HttpStatusCode.InternalServerError, "Failed to load metadata")
+                call.response.headers.append("X-CloudStream-Result-Status", "failed")
+                call.respond(HttpStatusCode.BadGateway, loadFailure ?: ProviderFailureDto(
+                    provider.name,
+                    "load",
+                    "EMPTY_RESULT",
+                    "Provider returned no metadata"
+                ))
                 return@get
             }
             
@@ -322,15 +651,19 @@ fun Application.module() {
                 tags = details.tags,
                 duration = details.duration,
                 trailers = details.trailers.map { TrailerDto("Trailer", it.extractorUrl) },
-                episodes = episodesList
+                episodes = episodesList,
+                capabilities = provider.capabilities(),
+                diagnostics = ProviderResultDiagnosticsDto("success")
             )
             
+            call.response.headers.append("X-CloudStream-Result-Status", "success")
             call.respond(dto)
         }
         
         // --- 5. Resolve Direct Streaming Links ---
         post("/api/v1/links") {
             val req = call.receive<LinkRequest>()
+            Log.i("Links", "Resolving links for provider=${req.provider}, data=${req.data.take(180)}")
             val provider = APIHolder.getApiFromNameNull(req.provider)
             if (provider == null) {
                 call.respond(HttpStatusCode.NotFound, "Provider '${req.provider}' not found")
@@ -339,9 +672,11 @@ fun Application.module() {
             
             val linksList = Collections.synchronizedList(mutableListOf<ExtractorLink>())
             val subtitlesList = Collections.synchronizedList(mutableListOf<SubtitleDto>())
+            var failure: ProviderFailureDto? = null
             
             try {
-                provider.loadLinks(
+                val completed = withTimeoutOrNull(provider.loadLinksTimeoutMs ?: 120_000L) {
+                    provider.loadLinks(
                     data = req.data,
                     isCasting = false,
                     subtitleCallback = { sub ->
@@ -357,12 +692,38 @@ fun Application.module() {
                     callback = { link ->
                         linksList.add(link)
                     }
-                )
-            } catch (e: Exception) {
+                    )
+                }
+                if (completed == null) {
+                    failure = ProviderFailureDto(provider.name, "links", "TIMEOUT", "Provider link loading timed out", true)
+                } else if (!completed && linksList.isEmpty() && subtitlesList.isEmpty()) {
+                    failure = ProviderFailureDto(provider.name, "links", "PROVIDER_ERROR", "Provider did not resolve any links")
+                }
+            } catch (e: Throwable) {
                 Log.e("Links", "Error loading links for ${req.data}: ${e.message}")
+                failure = ProviderFailureDto(provider.name, "links", e.failureCode(), e.failureMessage())
             }
+
+            Log.i("Links", "Resolved ${linksList.size} links and ${subtitlesList.size} subtitles for provider=${req.provider}")
             
-            call.respond(LinkResponse(links = linksList.toList(), subtitles = subtitlesList.toList()))
+            val links = linksList.toList()
+            val subtitles = subtitlesList.toList()
+            val status = resultStatus(links.size + subtitles.size, if (failure == null) 0 else 1)
+            call.response.headers.append("X-CloudStream-Result-Status", status)
+            failure?.let {
+                call.response.headers.append("X-CloudStream-Provider-Failures", Json.encodeToString(listOf(it)))
+            }
+            call.respond(
+                LinkResponse(
+                    links = links,
+                    subtitles = subtitles,
+                    capabilities = provider.capabilities(),
+                    diagnostics = ProviderResultDiagnosticsDto(
+                        status = status,
+                        failures = listOfNotNull(failure)
+                    )
+                )
+            )
         }
         
         // --- 6. Streaming HTTP range CORS Proxy ---
@@ -373,6 +734,8 @@ fun Application.module() {
             val url = URL(targetUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.requestMethod = "GET"
+            connection.connectTimeout = 10_000
+            connection.readTimeout = 60_000
             
             // Forward HTTP Range request header if client requested bytes range
             val range = call.request.headers["Range"]
@@ -389,6 +752,16 @@ fun Application.module() {
             val status = connection.responseCode
             val contentType = connection.contentType ?: "video/mp4"
             val contentLength = connection.contentLengthLong
+
+            if (status !in 200..299 && status != HttpURLConnection.HTTP_PARTIAL) {
+                val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText().take(500) }.orEmpty()
+                Log.w("Proxy", "Upstream returned HTTP $status for host=${url.host}, type=$contentType")
+                call.respondText(
+                    "Upstream returned HTTP $status${if (errorBody.isNotBlank()) ": $errorBody" else ""}",
+                    status = HttpStatusCode.fromValue(status)
+                )
+                return@get
+            }
             
             call.response.status(HttpStatusCode.fromValue(status))
             call.response.headers.append("Content-Type", contentType)
@@ -446,8 +819,21 @@ fun Application.module() {
                 episodeNum = req.episodeNum,
                 seasonNum = req.seasonNum,
                 positionMs = req.positionMs,
-                durationMs = req.durationMs
+                durationMs = req.durationMs,
+                title = req.title,
+                posterUrl = req.posterUrl,
+                provider = req.provider,
+                plot = req.plot,
+                type = req.type,
+                year = req.year,
+                score = req.score
             )
+            call.respond(mapOf("success" to true))
+        }
+
+        delete("/api/v1/history/{id}") {
+            val id = call.parameters["id"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing path parameter 'id'")
+            DatabaseHelper.removeWatchProgress(id)
             call.respond(mapOf("success" to true))
         }
 
@@ -469,8 +855,82 @@ fun Application.module() {
         }
         
         // --- 9. Dynamic Plugin Management ---
+        // --- 8.8 Browser challenge sessions ---
+        get("/api/v1/challenges") {
+            val response = ChallengeClient.request("GET", "/sessions")
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        post("/api/v1/challenges") {
+            val request = call.receive<ChallengeStartRequest>()
+            if (!isSafeChallengeUrl(request.url)) {
+                call.respond(HttpStatusCode.BadRequest, "Challenge URL must be a public HTTP(S) URL")
+                return@post
+            }
+            val body = Json.encodeToString(request).encodeToByteArray()
+            val response = ChallengeClient.request("POST", "/sessions", body)
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        get("/api/v1/challenges/{id}") {
+            ChallengeCookieStore.expireIfNeeded()
+            val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val response = ChallengeClient.request("GET", "/sessions/$id")
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        get("/api/v1/challenges/{id}/screenshot") {
+            val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val response = ChallengeClient.request("GET", "/sessions/$id/screenshot")
+            call.respondBytes(response.body, ContentType.Image.PNG, HttpStatusCode.fromValue(response.status))
+        }
+
+        post("/api/v1/challenges/{id}/click") {
+            val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val request = call.receive<ChallengeClickRequest>()
+            val response = ChallengeClient.request("POST", "/sessions/$id/click", Json.encodeToString(request).encodeToByteArray())
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        post("/api/v1/challenges/{id}/type") {
+            val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val request = call.receive<ChallengeTypeRequest>()
+            val response = ChallengeClient.request("POST", "/sessions/$id/type", Json.encodeToString(request).encodeToByteArray())
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        post("/api/v1/challenges/{id}/complete") {
+            val id = call.parameters["id"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val response = ChallengeClient.request("POST", "/sessions/$id/complete", "{}".encodeToByteArray())
+            if (response.status in 200..299 && response.body.decodeToString().contains("\"status\":\"ready\"")) {
+                val cookies = ChallengeClient.request("GET", "/sessions/$id/cookies").body.decodeToString()
+                val cookieHeader = Regex("""\"name\":\"([^\"]+)\",\"value\":\"([^\"]*)""").findAll(cookies)
+                    .joinToString("; ") { "${it.groupValues[1]}=${it.groupValues[2]}" }
+                val responseJson = response.body.decodeToString()
+                val userAgent = Regex("""\"userAgent\":\"([^\"]+)""").find(responseJson)
+                    ?.groupValues?.get(1)
+                val host = Regex("""\"url\":\"https?://([^/\"]+)""").find(responseJson)
+                    ?.groupValues?.get(1)
+                ChallengeCookieStore.apply(cookieHeader, userAgent, host)
+            }
+            call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
         get("/api/v1/plugins") {
-            call.respond(ServerPluginManager.getLoadedPlugins())
+            call.respond(ServerPluginManager.getPluginStatuses(ServerContext.pluginsDir))
+        }
+
+        post("/api/v1/plugins/{jarName}/enabled") {
+            val jarName = call.parameters["jarName"] ?: return@post call.respond(HttpStatusCode.BadRequest, "Missing plugin filename")
+            try {
+                val request = call.receive<PluginToggleRequest>()
+                val status = ServerPluginManager.setPluginEnabled(ServerContext.pluginsDir, jarName, request.enabled)
+                if (status == null) call.respond(HttpStatusCode.NotFound, "Plugin not found")
+                else call.respond(status)
+            } catch (e: Throwable) {
+                Log.e("Plugins", "Error toggling plugin $jarName: ${e.message}")
+                call.respond(HttpStatusCode.BadRequest, e.message ?: "Unable to toggle plugin")
+            }
         }
         
         post("/api/v1/plugins/install") {

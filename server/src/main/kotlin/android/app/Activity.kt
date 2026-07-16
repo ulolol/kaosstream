@@ -3,11 +3,18 @@ package android.app
 import android.content.Context
 import android.content.DialogInterface
 
-open class Activity : Context()
+open class Activity : Context() {
+    override fun getSharedPreferences(name: String, mode: Int): android.content.SharedPreferences {
+        return android.content.MockSharedPreferences(name)
+    }
+}
 open class Dialog
 
 class ActivityManager {
-    class MemoryInfo
+    class MemoryInfo {
+        @JvmField
+        var totalMem: Long = 0L
+    }
 }
 
 open class Application {

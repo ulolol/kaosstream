@@ -99,5 +99,44 @@
 
 ---
 
-## Next Steps
-1.  Verify setups inside local Docker containers on port `2106`.
+## Steps Taken (Continued)
+
+### 9. Headful Browser Solver & Automation Bypass
+- Configured Playwright Chromium in `server.js` to run in **headful mode** (`headless: false`) and inject an init script that hides the `navigator.webdriver` property.
+- Wrapped the challenge browser's startup command inside `xvfb-run` within the Dockerfile to support virtual framebuffer GUI execution on a headless Linux host.
+- Programmed an automatic background daemon that polls the active frame layout for Cloudflare Turnstile iframes and simulates a physical click on their center.
+- Created `escAttr` wrapper utility to sanitise templated strings in inline javascript listeners, resolving playback crashes for media titles with apostrophes (e.g. *Grey's Anatomy*).
+
+### 10. Multi-Device "Resume Watching" Section
+- Added `title`, `poster_url`, and `provider` columns to `watch_history` schema in `DatabaseHelper.kt` to record full metadata alongside watch progress.
+- Implemented robust `ALTER TABLE` upgrades within the DB initializer to dynamically migrate existing database schemas.
+- Modified the Web UI Homepage to show a premium "Resume Watching" section at the top of the feed featuring cover posters, progress metrics, and direct link bindings.
+- Converted the History page to render synced records retrieved from the SQLite server-side backend instead of local storage.
+
+### 11. Interactive Overlay Challenge Dialog
+- Modified the client challenge-handling logic from full-route URL redirection to a seamless modal overlay.
+- The challenge dialog appears automatically on any active page if a challenge is pending, streams screenshots in real-time, accepts click/type commands, and automatically closes once solved.
+
+---
+
+## Current Status & Next Steps
+- **Status**: The entire CloudStream server, challenge proxy, and responsive Web application are fully deployed and running on `G3NAS` at port `2106`.
+
+### 12. Non-blocking Homepage Streaming Population
+- **Problem**: When fetching homepages with "All Providers", the system originally waited for *every single provider* to finish loading (often taking 5-10s if a provider lagged or timed out) before showing anything, leaving the user with a blank loading screen.
+- **Solution**:
+  - Refactored the Ktor `/api/v1/home` endpoint to fetch all provider categories concurrently using Kotlin coroutines.
+  - Converted the route to return an NDJSON (Newline Delimited JSON) stream, flushing each category section immediately to the socket writer as soon as it completes.
+  - Modified the Javascript client's `renderHome()` to request watch progress first and render the "Resume Watching" section instantly (<50ms).
+  - Wired a `ReadableStream` reader in the client to process the incoming NDJSON stream line-by-line, dynamically appending homepage sections as they arrive, removing the loading spinner only when all providers complete.
+
+### 13. Event-Driven Watch Progress & Season/Episode Metadata Sync
+- **Problem 1**: Mobile Safari (on iOS/iPadOS) suspends `setInterval` timer ticks completely when in native fullscreen or when tabs lose focus, preventing the 8-second progress logging from saving.
+- **Problem 2**: Database foreign key constraints in `watch_history` to `bookmarks` blocked progress tracking of non-bookmarked shows.
+- **Problem 3**: External player streams (VLC, Infuse) did not log watch progress to the backend DB, and show/anime episodes lacked season and episode number logging, defaulting all series items in the resume section to "Movie".
+- **Solution**:
+  - Replaced the video player interval in `app.js` with robust event-driven hooks (throttling on native `<video>` `timeupdate` events, and listening to `pause`, `seeked`, and `pagehide` with `keepalive: true` fetches).
+  - Patched the SQLite schema setup in `DatabaseHelper.kt` to drop the bookmark constraint, synchronizing watch progress across all played titles.
+  - Hooked native player launcher clicks (`openNative`) to write a 2% watched progress trace (`positionMs = 10000`, `durationMs = 500000`) before hand-off, forcing external players to appear instantly in the homepage "Resume Watching" feed.
+  - Propagated `seasonNum` and `episodeNum` values from `renderDetail`'s episode selectors, through `playMedia` and `startPlayback`, all the way to player query params and backend POST requests.
+  - History items now display `S<season>E<episode>` instead of "Movie", for both native and external players.

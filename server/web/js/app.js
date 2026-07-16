@@ -1,6 +1,11 @@
 // Dynamic Router & SPA Handler
 const API_BASE = '/api/v1';
 
+function escAttr(str) {
+  if (!str) return '';
+  return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
 const state = {
   activeProvider: localStorage.getItem('cs_active_provider') || '',
   providers: [],
@@ -21,6 +26,55 @@ function showToast(message) {
   }, 3000);
 }
 
+// Full-screen loading overlay (blocks UI while fetching sources)
+function showLoadingOverlay(message = 'Fetching sources\u2026') {
+  document.getElementById('loading-overlay')?.remove();
+  const el = document.createElement('div');
+  el.id = 'loading-overlay';
+  el.innerHTML = `
+    <div class="loading-overlay-inner">
+      <div class="loading-spinner"></div>
+      <p class="loading-overlay-msg">${message}</p>
+    </div>
+  `;
+  document.body.appendChild(el);
+}
+
+function hideLoadingOverlay() {
+  document.getElementById('loading-overlay')?.remove();
+}
+
+/**
+ * Fetch full detail metadata for a URL from the backend provider scraper.
+ * Results are cached in sessionStorage to avoid redundant requests within the same session.
+ * Returns a partial object with: { name, posterUrl, plot, type, year, score } or {} on failure.
+ */
+async function fetchAndCacheDetailSnapshot(detailUrl, provider) {
+  if (!detailUrl || !provider || detailUrl.startsWith('[')) return {};
+  const cacheKey = `cs_detail_snap:${detailUrl}`;
+  try {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) return JSON.parse(cached);
+  } catch (_) {}
+  try {
+    const res = await fetch(`${API_BASE}/load?url=${encodeURIComponent(detailUrl)}&provider=${encodeURIComponent(provider)}`);
+    if (!res.ok) return {};
+    const d = await res.json();
+    const snap = {
+      name:      d.name      || null,
+      posterUrl: d.posterUrl || null,
+      plot:      d.plot      || null,
+      type:      d.type      || null,
+      year:      d.year      || null,
+      score:     d.score     || null
+    };
+    try { sessionStorage.setItem(cacheKey, JSON.stringify(snap)); } catch (_) {}
+    return snap;
+  } catch (_) {
+    return {};
+  }
+}
+
 // Router map
 const routes = {
   '/': renderHome,
@@ -31,6 +85,7 @@ const routes = {
   '/detail': renderDetail,
   '/player': renderPlayer,
   '/downloads': renderDownloads
+  ,'/challenge': renderChallenge
 };
 
 async function init() {
@@ -50,6 +105,124 @@ async function init() {
   
   // Run router
   handleRoute();
+  watchChallengeSessions();
+}
+
+function showChallengeModal(sessionId) {
+  if (document.getElementById('challenge-modal')) return;
+  const modal = document.createElement('div');
+  modal.id = 'challenge-modal';
+  modal.className = 'source-picker-backdrop';
+  modal.innerHTML = `
+    <section class="source-picker" role="dialog" aria-modal="true" style="max-width: 600px; padding: 24px; background: var(--color-backgroundLevel2); border-radius: 12px; border: 1px solid rgba(255,255,255,0.08);">
+      <div class="source-picker-header" style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div>
+          <p class="eyebrow" style="color: var(--color-colorPrimary); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 0.1em; margin: 0 0 4px 0;">Cloudflare verification required</p>
+          <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: #fff;">Complete Browser Challenge</h2>
+          <p style="font-size: 13px; color: var(--color-grayTextColor); margin-top: 4px; max-width: 450px;">
+            The server encountered a browser challenge. Please click on the Turnstile checkbox below to verify.
+          </p>
+        </div>
+        <button id="challenge-modal-close" style="background: none; border: none; color: #fff; font-size: 28px; cursor: pointer; padding: 0; line-height: 1;">×</button>
+      </div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; margin: 20px 0;">
+        <div id="challenge-modal-status" style="font-size: 14px; font-weight: 500; width: 100%; text-align: center; color: var(--color-colorPrimary);">Initializing...</div>
+        <div style="position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);">
+          <img id="challenge-modal-screenshot" style="width: 100%; height: 100%; object-fit: contain; cursor: crosshair;" alt="Challenge screen" hidden />
+          <div id="challenge-modal-empty" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--color-grayTextColor);">
+            Loading screenshot...
+          </div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 12px; width: 100%;">
+        <input id="challenge-modal-text" type="text" class="search-input" placeholder="Type text here..." style="flex: 1;" />
+        <button id="challenge-modal-type-btn" class="btn" style="padding: 10px 20px;">Type</button>
+        <button id="challenge-modal-complete-btn" class="btn btn-primary" style="padding: 10px 20px;">Check complete</button>
+      </div>
+    </section>
+  `;
+  document.body.appendChild(modal);
+  
+  const status = document.getElementById('challenge-modal-status');
+  const screenshot = document.getElementById('challenge-modal-screenshot');
+  const empty = document.getElementById('challenge-modal-empty');
+  
+  let timer = null;
+  
+  const update = async () => {
+    try {
+      const response = await fetch(`${API_BASE}/challenges/${sessionId}`);
+      if (!response.ok) {
+        clearInterval(timer);
+        modal.remove();
+        return;
+      }
+      const data = await response.json();
+      status.textContent = `${data.status.toUpperCase()}: ${data.title || data.url}`;
+      screenshot.src = `${API_BASE}/challenges/${sessionId}/screenshot?t=${Date.now()}`;
+      screenshot.hidden = false;
+      empty.hidden = true;
+      
+      if (data.status === 'ready') {
+        clearInterval(timer);
+        showToast('Challenge solved successfully!');
+        setTimeout(() => modal.remove(), 1500);
+      }
+    } catch (_) {
+      clearInterval(timer);
+      modal.remove();
+    }
+  };
+  
+  screenshot.addEventListener('click', async (event) => {
+    if (!screenshot.naturalWidth) return;
+    const rect = screenshot.getBoundingClientRect();
+    const x = (event.clientX - rect.left) * screenshot.naturalWidth / rect.width;
+    const y = (event.clientY - rect.top) * screenshot.naturalHeight / rect.height;
+    await fetch(`${API_BASE}/challenges/${sessionId}/click`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x, y })
+    });
+    await update();
+  });
+  
+  document.getElementById('challenge-modal-type-btn').addEventListener('click', async () => {
+    const text = document.getElementById('challenge-modal-text').value;
+    await fetch(`${API_BASE}/challenges/${sessionId}/type`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    await update();
+  });
+
+  document.getElementById('challenge-modal-complete-btn').addEventListener('click', async () => {
+    await fetch(`${API_BASE}/challenges/${sessionId}/complete`, { method: 'POST' });
+    await update();
+  });
+  
+  document.getElementById('challenge-modal-close').addEventListener('click', () => {
+    clearInterval(timer);
+    modal.remove();
+  });
+  
+  update();
+  timer = setInterval(update, 2000);
+}
+
+function watchChallengeSessions() {
+  window.challengePoller = setInterval(async () => {
+    try {
+      const sessions = await fetch(`${API_BASE}/challenges`).then(response => response.json());
+      const pending = sessions.find(session => session.status === 'pending');
+      if (pending) {
+        showChallengeModal(pending.id);
+      }
+    } catch (_) {
+      // Challenge service may be intentionally unavailable.
+    }
+  }, 2000);
 }
 
 function populateProvidersSelect() {
@@ -90,9 +263,13 @@ function handleRoute() {
     window.currentHls.destroy();
     window.currentHls = null;
   }
-  if (window.currentProgressInterval) {
-    clearInterval(window.currentProgressInterval);
-    window.currentProgressInterval = null;
+  if (window.savePlayerProgress) {
+    try { window.savePlayerProgress(); } catch (_) {}
+    window.savePlayerProgress = null;
+  }
+  if (window.playerKeyHandler) {
+    document.removeEventListener('keydown', window.playerKeyHandler);
+    window.playerKeyHandler = null;
   }
 
   // Highlight active nav item
@@ -130,9 +307,10 @@ function handleRoute() {
     '/plugins': 'Plugins',
     '/detail': 'Details',
     '/player': 'Player',
-    '/downloads': 'Downloads'
+  '/downloads': 'Downloads'
+    ,'/challenge': 'Browser Challenge'
   };
-  document.getElementById('page-title').innerText = titleMap[routePath] || 'CloudStream';
+  document.getElementById('page-title').innerText = titleMap[routePath] || 'Ka0SStream';
 
   renderFn();
 }
@@ -154,51 +332,159 @@ function getQueryParams() {
 
 async function renderHome() {
   const outlet = document.getElementById('view-outlet');
-  outlet.innerHTML = '<div class="loading">Loading Home...</div>';
+  outlet.innerHTML = `
+    <div id="resume-container"></div>
+    <div id="sections-container"></div>
+    <div id="home-spinner" class="loading">Loading home sections...</div>
+  `;
 
-  if (!state.activeProvider) {
-    outlet.innerHTML = `
-      <div style="text-align: center; margin-top: 80px;">
-        <h2 style="margin-bottom: 16px;">Welcome to CloudStream Web!</h2>
-        <p style="color: var(--color-grayTextColor); margin-bottom: 24px;">Please select an active provider from the top-right corner to browse recommendations.</p>
-      </div>
-    `;
-    return;
+  const resumeContainer = document.getElementById('resume-container');
+  const sectionsContainer = document.getElementById('sections-container');
+  const spinner = document.getElementById('home-spinner');
+
+  let hasResume = false;
+  let hasSections = false;
+
+  // 1. Fetch and render watch history (Resume section) immediately
+  try {
+    const historyRes = await fetch(`${API_BASE}/history`);
+    if (historyRes.ok) {
+      const historyList = await historyRes.json();
+      const resumeItems = historyList.filter(item => {
+        if (!item.durationMs || !item.positionMs) return false;
+        const pct = item.positionMs / item.durationMs;
+        return pct >= 0.01 && pct <= 0.95;
+      });
+
+      if (resumeItems.length > 0) {
+        hasResume = true;
+        resumeContainer.innerHTML = `
+          <div class="carousel-section">
+            <h3 class="carousel-title">Resume Watching</h3>
+            <div class="grid-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">
+              ${resumeItems.map(item => {
+                const pct = Math.min(100, Math.round((item.positionMs / item.durationMs) * 100));
+                const displayTitle = item.title || 'Untitled';
+                const label = (item.seasonNum != null && item.episodeNum != null)
+                  ? `S${item.seasonNum}E${item.episodeNum}`
+                  : 'Movie';
+                const detailsUrl = (item.parentId && !item.parentId.startsWith('[')) ? item.parentId : (!item.id.startsWith('[') ? item.id : '');
+                const prov = item.provider || '';
+                return `
+                  <div class="media-card resume-card" style="position: relative;">
+                    <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${displayTitle}">
+                    
+                    <!-- Premium watch control overlays -->
+                    <div class="resume-card-overlay">
+                      <button class="resume-action-btn play-btn" onclick="event.stopPropagation(); playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})" title="Resume Watching">
+                        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      </button>
+                      <button class="resume-action-btn info-btn" onclick="event.stopPropagation(); if ('${detailsUrl}') window.location.hash = '#/detail?url=${encodeURIComponent(detailsUrl)}&provider=${encodeURIComponent(prov)}'; else showToast('Details URL not available');" title="Show Info">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                      </button>
+                      <button class="resume-action-btn remove-btn" onclick="event.stopPropagation(); removeHistoryItem('${escAttr(item.id)}')" title="Remove Watch Progress">
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      </button>
+                    </div>
+                    
+                    <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 6px; background: rgba(255,255,255,0.15);">
+                      <div style="width: ${pct}%; height: 100%; background: var(--color-colorPrimary);"></div>
+                    </div>
+                    <div class="card-info">
+                      <div class="card-title">${displayTitle}</div>
+                      <div class="card-metadata">
+                        <span>${label}</span>
+                        <span>${pct}%</span>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }
+    }
+  } catch (err) {
+    console.error('Error fetching watch history:', err);
   }
 
+  // 2. Stream homepage sections from Ktor backend
   try {
-    // To implement the lightest solution, we will search for empty string or general keyword to act as homepage content,
-    // or trigger provider.getMainPage() if available.
-    // Let's run a default search query "popular" or "trending" on the provider to get content quickly
-    const res = await fetch(`${API_BASE}/search?q=popular&provider=${state.activeProvider}`);
-    const results = await res.json();
-    
-    if (results.length === 0) {
-      outlet.innerHTML = '<div class="loading">No content found. Try searching.</div>';
-      return;
-    }
+    const providerQuery = state.activeProvider
+      ? `?provider=${encodeURIComponent(state.activeProvider)}`
+      : '';
+    const homeRes = await fetch(`${API_BASE}/home${providerQuery}`);
+    if (!homeRes.body) throw new Error('ReadableStream not supported');
 
-    outlet.innerHTML = `
-      <div class="carousel-section">
-        <h3 class="carousel-title">Trending Content</h3>
-        <div class="grid-container">
-          ${results.map(item => `
-            <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-              <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${item.name}">
-              <div class="card-info">
-                <div class="card-title">${item.name}</div>
-                <div class="card-metadata">
-                  <span>${item.type || 'Media'}</span>
-                  ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
-                </div>
+    const reader = homeRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // Keep incomplete line
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const section = JSON.parse(line);
+          if (section.items && section.items.length > 0) {
+            hasSections = true;
+            const sectionDiv = document.createElement('div');
+            sectionDiv.className = 'carousel-section';
+            sectionDiv.innerHTML = `
+              <h3 class="carousel-title">${section.name} <span class="section-provider">${section.provider}</span></h3>
+              <div class="grid-container">
+                ${section.items.map(item => `
+                  <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
+                    <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${item.name}">
+                    <div class="card-info">
+                      <div class="card-title">${item.name}</div>
+                      <div class="card-metadata">
+                        <span>${item.type || 'Media'}</span>
+                        ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
+                      </div>
+                    </div>
+                  </div>
+                `).join('')}
               </div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
+            `;
+            sectionsContainer.appendChild(sectionDiv);
+          }
+        } catch (err) {
+          console.error('Failed to parse home section JSON line:', err);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Failed to stream homepage sections:', err);
+  } finally {
+    spinner.remove();
+    if (!hasResume && !hasSections) {
+      sectionsContainer.innerHTML = '<div class="loading">No homepage content is available. Try searching.</div>';
+    }
+  }
+}
+
+async function removeHistoryItem(id) {
+  if (!confirm('Are you sure you want to remove this item from your Continue Watching list?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/history/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    });
+    if (res.ok) {
+      showToast('Removed from history');
+      renderHome(); // Re-render Home view to update the feed
+    } else {
+      showToast('Failed to remove item');
+    }
   } catch (e) {
-    outlet.innerHTML = '<div class="loading">Failed to load content.</div>';
+    showToast('Error removing history item');
   }
 }
 
@@ -222,16 +508,25 @@ async function renderSearch() {
     resultsArea.innerHTML = '<div class="loading">Searching...</div>';
 
     try {
-      const url = `${API_BASE}/search?q=${encodeURIComponent(q)}${state.activeProvider ? `&provider=${state.activeProvider}` : ''}`;
+      const url = `${API_BASE}/search?q=${encodeURIComponent(q)}${state.activeProvider ? `&provider=${encodeURIComponent(state.activeProvider)}` : ''}&diagnostics=true`;
       const res = await fetch(url);
-      const results = await res.json();
+      const payload = await res.json();
+      const results = Array.isArray(payload) ? payload : (payload.results || []);
+      const failures = Array.isArray(payload) ? [] : (payload.failures || []);
+      const failureNotice = failures.length ? `<div class="provider-failure-notice"><strong>Some providers were unavailable</strong>${failures.slice(0, 8).map(f => {
+        const provider = state.providers.find(item => item.name === f.provider);
+        const action = f.code === 'CHALLENGE_REQUIRED' && provider?.url
+          ? ` <a href="#/challenge?url=${encodeURIComponent(provider.url)}">Open browser challenge</a>`
+          : '';
+        return `<span>${f.provider}: ${f.message}${action}</span>`;
+      }).join('')}</div>` : '';
 
       if (results.length === 0) {
-        resultsArea.innerHTML = '<div class="loading">No results found.</div>';
+        resultsArea.innerHTML = `${failureNotice}<div class="loading">No results found.</div>`;
         return;
       }
 
-      resultsArea.innerHTML = `
+      resultsArea.innerHTML = `${failureNotice}
         <div class="grid-container">
           ${results.map(item => `
             <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
@@ -258,6 +553,72 @@ async function renderSearch() {
   });
 }
 
+async function renderChallenge() {
+  const outlet = document.getElementById('view-outlet');
+  const params = getQueryParams();
+  outlet.innerHTML = `
+    <div class="challenge-view">
+      <div class="challenge-header"><p class="eyebrow">Interactive provider access</p><h2>Complete browser verification</h2><p>Use this isolated browser session to complete the provider challenge. Cookies remain on the server and are never exposed to this page.</p></div>
+      <div class="challenge-start-row"><input class="search-input" id="challenge-url" value="${params.url || ''}" placeholder="https://provider.example/challenge"><button class="btn btn-primary" id="challenge-start-btn">Open challenge</button></div>
+      <div id="challenge-status" class="challenge-status">No challenge session started.</div>
+      <div class="challenge-stage"><img id="challenge-screenshot" alt="Provider challenge screenshot" hidden><div id="challenge-empty">The challenge screenshot will appear here.</div></div>
+      <div class="challenge-actions"><input class="search-input" id="challenge-text" placeholder="Optional text input"><button class="btn" id="challenge-type-btn">Type</button><button class="btn btn-primary" id="challenge-complete-btn">Check completion</button></div>
+    </div>
+  `;
+  let sessionId = params.id || null;
+  let pollTimer = null;
+  const status = document.getElementById('challenge-status');
+  const screenshot = document.getElementById('challenge-screenshot');
+  const empty = document.getElementById('challenge-empty');
+  const update = async () => {
+    if (!sessionId) return;
+    const response = await fetch(`${API_BASE}/challenges/${sessionId}`);
+    const data = await response.json();
+    status.textContent = `${data.status}: ${data.title || data.url || ''}`;
+    screenshot.src = `${API_BASE}/challenges/${sessionId}/screenshot?t=${Date.now()}`;
+    screenshot.hidden = false;
+    empty.hidden = true;
+    if (data.status === 'ready') {
+      clearInterval(pollTimer);
+      showToast('Challenge completed. Retry the provider operation.');
+    }
+  };
+  document.getElementById('challenge-start-btn').addEventListener('click', async () => {
+    const url = document.getElementById('challenge-url').value.trim();
+    if (!/^https?:\/\//i.test(url)) return showToast('Enter a valid provider URL.');
+    const response = await fetch(`${API_BASE}/challenges`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+    const data = await response.json();
+    if (!response.ok) return showToast(data.error || 'Unable to start challenge.');
+    sessionId = data.id;
+    status.textContent = `${data.status}: ${data.title || data.url}`;
+    await update();
+    clearInterval(pollTimer);
+    pollTimer = setInterval(update, 2000);
+  });
+  screenshot.addEventListener('click', async (event) => {
+    if (!sessionId || !screenshot.naturalWidth) return;
+    const rect = screenshot.getBoundingClientRect();
+    await fetch(`${API_BASE}/challenges/${sessionId}/click`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ x: (event.clientX - rect.left) * screenshot.naturalWidth / rect.width, y: (event.clientY - rect.top) * screenshot.naturalHeight / rect.height }) });
+    await update();
+  });
+  document.getElementById('challenge-type-btn').addEventListener('click', async () => {
+    if (!sessionId) return;
+    const text = document.getElementById('challenge-text').value;
+    await fetch(`${API_BASE}/challenges/${sessionId}/type`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+    await update();
+  });
+  document.getElementById('challenge-complete-btn').addEventListener('click', async () => {
+    if (sessionId) await fetch(`${API_BASE}/challenges/${sessionId}/complete`, { method: 'POST' });
+    await update();
+  });
+  if (params.id) {
+    document.getElementById('challenge-start-btn').disabled = true;
+    update().then(() => { clearInterval(pollTimer); pollTimer = setInterval(update, 2000); });
+  } else if (params.url) {
+    document.getElementById('challenge-start-btn').click();
+  }
+}
+
 async function renderDetail() {
   const outlet = document.getElementById('view-outlet');
   const params = getQueryParams();
@@ -274,19 +635,24 @@ async function renderDetail() {
 
     const isBookmarked = state.bookmarks.some(b => b.url === details.url);
 
+    // Fallback title/poster from local watch history when provider metadata is sparse
+    const histEntry = state.history.find(h => h.url === params.url || h.url === details.url);
+    const displayName = (details.name && details.name !== details.url) ? details.name : (histEntry?.title || details.name || params.url);
+    const displayPoster = details.posterUrl || histEntry?.posterUrl || null;
+
     outlet.innerHTML = `
       <div class="detail-container">
-        <img class="detail-poster" src="${details.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${details.name}">
+        <img class="detail-poster" src="${displayPoster || 'https://via.placeholder.com/300x450'}" alt="${displayName}">
         <div class="detail-content">
-          <h2 class="detail-title">${details.name}</h2>
+          <h2 class="detail-title">${displayName}</h2>
           <div class="detail-meta-row">
-            <span>${details.type}</span>
+            <span>${details.type || 'Movie'}</span>
             ${details.year ? `<span>${details.year}</span>` : ''}
             ${details.duration ? `<span>${details.duration} min</span>` : ''}
             ${details.score ? `<span class="rating-badge">★ ${details.score.toFixed(1)}</span>` : ''}
           </div>
           <p class="detail-plot">${details.plot || 'No overview available.'}</p>
-          
+
           <div style="display: flex; gap: 16px; margin-bottom: 40px;">
             <button class="btn btn-primary" id="play-btn">
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -300,14 +666,16 @@ async function renderDetail() {
             </button>
           </div>
 
-          <h3>Episodes</h3>
           <div style="margin-top: 16px; max-height: 400px; overflow-y: auto;">
-            ${details.episodes.map(ep => `
-              <div class="episode-row" style="display:flex; justify-content:space-between; align-items:center; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); cursor:pointer;" onclick="playMedia('${ep.url}', '${details.apiName}', '${details.name} - ${ep.name || `Episode ${ep.episode}`}')">
-                <span>${ep.name || `Episode ${ep.episode || 1}`}</span>
-                <span style="color: var(--color-grayTextColor); font-size:14px;">Play</span>
-              </div>
-            `).join('')}
+            ${details.episodes.map(ep => {
+              const epTitle = `${details.name} - ${ep.name || `Episode ${ep.episode || 1}`}`;
+              return `
+                <div class="episode-row" style="display:flex; justify-content:space-between; align-items:center; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); cursor:pointer;" onclick="playMedia('${escAttr(ep.url)}', '${escAttr(details.apiName)}', '${escAttr(epTitle)}', '${escAttr(details.url)}', '${escAttr(details.posterUrl || '')}', ${ep.season !== undefined && ep.season !== null ? ep.season : 'null'}, ${ep.episode !== undefined && ep.episode !== null ? ep.episode : 'null'})">
+                  <span>${ep.name || `Episode ${ep.episode || 1}`}</span>
+                  <span style="color: var(--color-grayTextColor); font-size:14px;">Play</span>
+                </div>
+              `;
+            }).join('')}
           </div>
         </div>
       </div>
@@ -373,7 +741,8 @@ async function renderDetail() {
 
     document.getElementById('play-btn').addEventListener('click', () => {
       if (details.episodes.length > 0) {
-        playMedia(details.episodes[0].url, details.apiName, `${details.name}`);
+        const firstEp = details.episodes[0];
+        playMedia(firstEp.url, details.apiName, `${details.name}`, details.url, details.posterUrl || '', firstEp.season !== undefined && firstEp.season !== null ? firstEp.season : null, firstEp.episode !== undefined && firstEp.episode !== null ? firstEp.episode : null);
       } else {
         showToast('No links available.');
       }
@@ -384,8 +753,8 @@ async function renderDetail() {
   }
 }
 
-async function playMedia(url, provider, title) {
-  showToast('Fetching video links...');
+async function playMedia(url, provider, title, parentId = '', posterUrl = '', seasonNum = null, episodeNum = null) {
+  showLoadingOverlay('Fetching sources\u2026');
   try {
     const res = await fetch(`${API_BASE}/links`, {
       method: 'POST',
@@ -393,32 +762,214 @@ async function playMedia(url, provider, title) {
       body: JSON.stringify({ data: url, provider })
     });
     const data = await res.json();
-    
+    hideLoadingOverlay();
+
     if (data.links.length === 0) {
       showToast('No playable video sources found.');
       return;
     }
-    
-    // Play the first link
-    const firstLink = data.links[0];
+
+    showSourcePicker(data, title, url, provider, parentId, posterUrl, seasonNum, episodeNum);
+  } catch (e) {
+    hideLoadingOverlay();
+    showToast(e.message || 'Error loading video sources.');
+  }
+}
+
+function showSourcePicker(data, title, id, provider, parentId = '', posterUrl = '', seasonNum = null, episodeNum = null) {
+  document.getElementById('source-picker')?.remove();
+  sessionStorage.setItem(`cs_sources:${id}`, JSON.stringify(data));
+  const overlay = document.createElement('div');
+  overlay.id = 'source-picker';
+  overlay.className = 'source-picker-backdrop';
+  overlay.innerHTML = `
+    <section class="source-picker" role="dialog" aria-modal="true" aria-labelledby="source-picker-title">
+      <div class="source-picker-header">
+        <div><p class="eyebrow">Playback setup</p><h2 id="source-picker-title">Choose how to play</h2><p class="source-picker-subtitle"></p></div>
+        <button class="source-picker-close" type="button" aria-label="Close">×</button>
+      </div>
+      <div class="source-picker-section"><h3>Sources</h3><div class="source-list" id="source-list"></div><div class="native-player-actions"><button class="player-toolbar-btn" type="button" id="open-vlc-btn">Open in VLC</button><button class="player-toolbar-btn" type="button" id="open-infuse-btn">Open in Infuse</button><button class="player-toolbar-btn" type="button" id="download-vlc-btn">Download VLC playlist</button></div></div>
+      <div class="source-picker-section"><h3>Subtitles</h3><div class="subtitle-list" id="subtitle-list"></div></div>
+      <div class="source-picker-actions"><button class="btn" type="button" id="source-cancel-btn">Cancel</button><button class="btn btn-primary" type="button" id="source-play-btn">Play selected source</button></div>
+    </section>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.source-picker-subtitle').textContent = title;
+
+  const mediaId = parentId || id;
+  const lastSourceUrl = localStorage.getItem(`cs_last_source_url:${mediaId}`);
+  const lastSourceName = localStorage.getItem(`cs_last_source_name:${mediaId}`);
+  const lastSubtitles = JSON.parse(localStorage.getItem(`cs_last_subtitles:${mediaId}`) || '[]');
+  
+  const prefQuality = localStorage.getItem('cs_pref_source_quality');
+  const prefName = localStorage.getItem('cs_pref_source_name');
+  const prefSubtitle = localStorage.getItem('cs_pref_subtitle_lang');
+
+  const sourceList = document.getElementById('source-list');
+  let selectedIndex = 0;
+  
+  // Try to find matching source index based on last used source or global preference
+  const matchIndex = data.links.findIndex(link => 
+    (lastSourceUrl && link.url === lastSourceUrl) ||
+    (lastSourceName && link.name === lastSourceName) ||
+    (prefQuality && link.quality === prefQuality && prefName && link.name === prefName)
+  );
+  if (matchIndex !== -1) {
+    selectedIndex = matchIndex;
+  }
+
+  data.links.forEach((link, index) => {
+    const label = document.createElement('label');
+    label.className = 'source-choice';
+    label.innerHTML = `<input type="radio" name="playback-source" value="${index}" ${index === selectedIndex ? 'checked' : ''}><span class="source-choice-copy"><strong></strong><small></small></span>`;
+    label.querySelector('strong').textContent = link.name || link.quality || `Source ${index + 1}`;
+    label.querySelector('small').textContent = [link.quality, link.referer ? 'Protected stream' : 'Direct stream'].filter(Boolean).join(' · ');
+    sourceList.appendChild(label);
+  });
+
+  const subtitleList = document.getElementById('subtitle-list');
+  if (!data.subtitles?.length) {
+    subtitleList.innerHTML = '<p class="source-empty">No subtitles were provided by this source.</p>';
+  } else {
+    data.subtitles.forEach((subtitle, index) => {
+      const isChecked = lastSubtitles.includes(subtitle.lang) || (prefSubtitle && subtitle.lang === prefSubtitle);
+      const label = document.createElement('label');
+      label.className = 'subtitle-choice';
+      label.innerHTML = `<input type="checkbox" value="${index}" ${isChecked ? 'checked' : ''}><span></span>`;
+      label.querySelector('span').textContent = subtitle.lang || `Subtitle ${index + 1}`;
+      subtitleList.appendChild(label);
+    });
+  }
+
+  const close = () => overlay.remove();
+  overlay.querySelector('.source-picker-close').addEventListener('click', close);
+  document.getElementById('source-cancel-btn').addEventListener('click', close);
+  document.getElementById('source-play-btn').addEventListener('click', () => {
+    const sourceIndex = Number(document.querySelector('input[name="playback-source"]:checked')?.value || 0);
+    const selectedSubtitles = [...document.querySelectorAll('#subtitle-list input:checked')].map(input => data.subtitles[Number(input.value)]);
+    close();
+    startPlayback(data.links[sourceIndex], selectedSubtitles, title, id, provider, sourceIndex, parentId, posterUrl, seasonNum, episodeNum);
+  });
+  const getNativeUrl = () => {
+    const sourceIndex = Number(document.querySelector('input[name="playback-source"]:checked')?.value || 0);
+    const source = data.links[sourceIndex];
+    const referer = source.referer || '';
+    return new URL(`${API_BASE}/proxy?url=${encodeURIComponent(source.url)}&referer=${encodeURIComponent(referer)}`, window.location.href).href;
+  };
+  const openNative = async (scheme) => {
+    const nativeUrl = getNativeUrl();
+    const userAgent = navigator.userAgent || '';
+    const sourceIndex = Number(document.querySelector('input[name="playback-source"]:checked')?.value || 0);
+    const source = data.links[sourceIndex];
+
+    // Save source preference selections
+    localStorage.setItem(`cs_last_source_url:${mediaId}`, source.url);
+    localStorage.setItem(`cs_last_source_name:${mediaId}`, source.name || '');
+    if (source.quality) localStorage.setItem('cs_pref_source_quality', source.quality);
+    if (source.name) localStorage.setItem('cs_pref_source_name', source.name);
+
+    // Fetch full detail snapshot so the history record is as rich as a native play
+    // Use parentId (series/movie page) when available, otherwise fall back to the episode/link id
+    const snapUrl = (parentId && !parentId.startsWith('[')) ? parentId : (!id.startsWith('[') ? id : null);
+    const snap = await fetchAndCacheDetailSnapshot(snapUrl, provider);
+
+    const richTitle    = snap.name      || title;
+    const richPoster   = snap.posterUrl || posterUrl || null;
+
+    // Save to watch history on backend
+    fetch(`${API_BASE}/history`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id:         id,
+        parentId:   parentId || null,
+        positionMs: 10000,
+        durationMs: 500000,
+        title:      richTitle,
+        posterUrl:  richPoster,
+        plot:       snap.plot  || null,
+        type:       snap.type  || null,
+        year:       snap.year  || null,
+        score:      snap.score || null,
+        provider:   provider,
+        seasonNum:  seasonNum,
+        episodeNum: episodeNum
+      }),
+      keepalive: true
+    }).catch(console.error);
+
+    // Save to local state
+    const historyItem = { title: richTitle, url: id, provider, timestamp: Date.now(), parentId, posterUrl: richPoster, seasonNum, episodeNum };
+    state.history = [historyItem, ...state.history.filter(h => h.url !== id)].slice(0, 50);
+    localStorage.setItem('cs_history', JSON.stringify(state.history));
+
+    if (scheme === 'vlc' && /Android/i.test(userAgent)) {
+      window.location.href = `intent://${nativeUrl.replace(/^https?:\/\//, '')}#Intent;scheme=https;package=org.videolan.vlc;end`;
+    } else if (scheme === 'vlc' && /iPad|iPhone|iPod/i.test(userAgent)) {
+      window.location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(nativeUrl)}`;
+    } else if (scheme === 'vlc') {
+      window.location.href = `vlc://${nativeUrl}`;
+    } else {
+      window.location.href = `infuse://x-callback-url/play?url=${encodeURIComponent(nativeUrl)}`;
+    }
+  };
+  document.getElementById('open-vlc-btn').addEventListener('click', () => openNative('vlc'));
+  document.getElementById('open-infuse-btn').addEventListener('click', () => openNative('infuse'));
+  document.getElementById('download-vlc-btn').addEventListener('click', () => {
+    const content = `#EXTM3U\n#EXTINF:-1,${title}\n${getNativeUrl()}\n`;
+    const blob = new Blob([content], { type: 'audio/x-mpegurl' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${title.replace(/[^a-z0-9]+/gi, '-').replace(/^-|-$/g, '') || 'video'}.m3u`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+}
+
+async function startPlayback(firstLink, subtitles, title, id, provider, sourceIndex = 0, parentId = '', posterUrl = '', seasonNum = null, episodeNum = null) {
     let streamUrl = firstLink.url;
     let referer = firstLink.referer || '';
 
-    // If source requires specialized headers (like referer), route it through Ktor stream proxy
-    if (firstLink.headers && Object.keys(firstLink.headers).length > 0 || referer) {
+    // If source requires specialized headers (like referer), route through Ktor stream proxy
+    if ((firstLink.headers && Object.keys(firstLink.headers).length > 0) || referer) {
       streamUrl = `${API_BASE}/proxy?url=${encodeURIComponent(streamUrl)}&referer=${encodeURIComponent(referer)}`;
     }
-    
+
+    let sourceData = null;
+    try { sourceData = JSON.parse(sessionStorage.getItem(`cs_sources:${id}`) || 'null'); } catch (_) { sourceData = null; }
+    sessionStorage.setItem(`cs_playback:${id}`, JSON.stringify({
+      streamUrl,
+      subtitles: subtitles || [],
+      sourceIndex,
+      links: sourceData?.links || [{ url: firstLink.url, quality: firstLink.quality, name: firstLink.name, referer: firstLink.referer }]
+    }));
+
+    // Save source/subtitle preferences for auto-resume
+    const mediaId = parentId || id;
+    localStorage.setItem(`cs_last_source_url:${mediaId}`, firstLink.url);
+    localStorage.setItem(`cs_last_source_name:${mediaId}`, firstLink.name || '');
+
+    const selectedSubLangs = (subtitles || []).map(s => s.lang);
+    localStorage.setItem(`cs_last_subtitles:${mediaId}`, JSON.stringify(selectedSubLangs));
+
+    if (firstLink.quality) localStorage.setItem('cs_pref_source_quality', firstLink.quality);
+    if (firstLink.name) localStorage.setItem('cs_pref_source_name', firstLink.name);
+    if (selectedSubLangs.length > 0) localStorage.setItem('cs_pref_subtitle_lang', selectedSubLangs[0]);
+
+    // Fetch full detail snapshot for a rich history record (cached, so no extra round-trip if detail page was already loaded)
+    const snapUrl = (parentId && !parentId.startsWith('[')) ? parentId : (!id.startsWith('[') ? id : null);
+    const snap = await fetchAndCacheDetailSnapshot(snapUrl, provider);
+
+    const richTitle  = snap.name      || title;
+    const richPoster = snap.posterUrl || posterUrl || null;
+
     // Save to local history
-    const historyItem = { title, url, provider, timestamp: Date.now() };
-    state.history = [historyItem, ...state.history.filter(h => h.url !== url)].slice(0, 50);
+    const historyItem = { title: richTitle, url: id, provider, timestamp: Date.now(), parentId, posterUrl: richPoster, seasonNum, episodeNum };
+    state.history = [historyItem, ...state.history.filter(h => h.url !== id)].slice(0, 50);
     localStorage.setItem('cs_history', JSON.stringify(state.history));
-    
+
     // Redirect SPA router to embedded video player view
-    window.location.hash = `#/player?url=${encodeURIComponent(streamUrl)}&title=${encodeURIComponent(title)}&provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(url)}`;
-  } catch (e) {
-    showToast('Error loading video sources.');
-  }
+    window.location.hash = `#/player?url=${encodeURIComponent(streamUrl)}&title=${encodeURIComponent(richTitle)}&provider=${encodeURIComponent(provider)}&id=${encodeURIComponent(id)}&parentId=${encodeURIComponent(parentId)}&posterUrl=${encodeURIComponent(richPoster || posterUrl)}&seasonNum=${seasonNum !== null ? seasonNum : ''}&episodeNum=${episodeNum !== null ? episodeNum : ''}`;
 }
 
 function renderPlayer() {
@@ -430,8 +981,15 @@ function renderPlayer() {
     return;
   }
 
+  let playback = null;
+  try {
+    playback = JSON.parse(sessionStorage.getItem(`cs_playback:${params.id}`) || 'null');
+  } catch (_) {
+    playback = null;
+  }
+
   outlet.innerHTML = `
-    <div class="player-container">
+    <div class="player-container" id="player-shell">
       <a href="#/history" class="player-back-btn" id="player-close-btn">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
         Back
@@ -439,12 +997,45 @@ function renderPlayer() {
       <div class="player-header">
         <span class="player-title" id="player-title-text">${params.title}</span>
       </div>
-      <video id="video-element" class="player-video" controls autoplay></video>
+      <div class="player-stage" id="player-stage">
+        <video id="video-element" class="player-video" controls autoplay playsinline preload="metadata"></video>
+        <div class="player-center-controls">
+          <button class="player-control" id="skip-back-btn" aria-label="Skip back 10 seconds">↶ 10</button>
+          <button class="player-control player-play-control" id="play-toggle-btn" aria-label="Play or pause">▶</button>
+          <button class="player-control" id="skip-forward-btn" aria-label="Skip forward 10 seconds">10 ↷</button>
+        </div>
+      </div>
+      <div class="player-toolbar" aria-label="Player options">
+        <label class="player-option">Speed
+          <select id="playback-speed" aria-label="Playback speed">
+            <option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
+          </select>
+        </label>
+        <label class="player-option" id="quality-option" hidden>Quality
+          <select id="playback-quality" aria-label="Video quality"><option value="-1">Auto</option></select>
+        </label>
+        <label class="player-option" id="audio-option" hidden>Audio
+          <select id="playback-audio" aria-label="Audio track"><option value="-1">Auto</option></select>
+        </label>
+        <label class="player-option" id="subtitle-option" hidden>Subtitles
+          <select id="subtitle-select" aria-label="Subtitles"><option value="-1">Off</option></select>
+        </label>
+        <button class="player-toolbar-btn" id="pip-btn" type="button">PiP</button>
+        <button class="player-toolbar-btn" id="change-source-btn" type="button">Change source</button>
+        <button class="player-toolbar-btn" id="fullscreen-btn" type="button">Fullscreen</button>
+      </div>
     </div>
   `;
 
   const video = document.getElementById('video-element');
-  const streamUrl = params.url;
+  const streamUrl = playback?.streamUrl || params.url;
+  const subtitles = playback?.subtitles || [];
+  let sourceData = null;
+  try {
+    sourceData = JSON.parse(sessionStorage.getItem(`cs_sources:${params.id}`) || 'null');
+  } catch (_) {
+    sourceData = null;
+  }
 
   // Retrieve any existing watch position from history to support resume watching
   fetch(`${API_BASE}/history`)
@@ -471,25 +1062,158 @@ function renderPlayer() {
     hls.loadSource(streamUrl);
     hls.attachMedia(video);
     window.currentHls = hls;
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      const qualitySelect = document.getElementById('playback-quality');
+      const qualityOption = document.getElementById('quality-option');
+      const levels = hls.levels || [];
+      levels.forEach((level, index) => {
+        const option = document.createElement('option');
+        option.value = index;
+        option.textContent = level.height ? `${level.height}p` : `${Math.round((level.bitrate || 0) / 1000)} kbps`;
+        qualitySelect.appendChild(option);
+      });
+      qualityOption.hidden = levels.length < 2;
+      qualitySelect.addEventListener('change', () => {
+        hls.currentLevel = Number(qualitySelect.value);
+      });
+      const audioSelect = document.getElementById('playback-audio');
+      const audioOption = document.getElementById('audio-option');
+      const addAudioTracks = () => {
+        audioSelect.innerHTML = '<option value="-1">Auto</option>';
+        (hls.audioTracks || []).forEach((track, index) => {
+          const option = document.createElement('option');
+          option.value = index;
+          option.textContent = track.name || track.lang || `Audio ${index + 1}`;
+          audioSelect.appendChild(option);
+        });
+        audioOption.hidden = (hls.audioTracks || []).length < 2;
+      };
+      if (hls.audioTracks?.length) addAudioTracks();
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, addAudioTracks);
+      audioSelect.addEventListener('change', () => { hls.audioTrack = Number(audioSelect.value); });
+    });
+    hls.on(Hls.Events.ERROR, (_, error) => {
+      if (error.fatal) showToast('The stream could not be loaded.');
+    });
   } else {
     video.src = streamUrl;
   }
 
-  // Periodic watch progress logging to server backend DB
-  window.currentProgressInterval = setInterval(() => {
-    if (!video.duration || video.paused) return;
-    
+  video.addEventListener('error', () => {
+    const message = 'This source is not browser-compatible. iPad supports MP4/HLS, but this source may be MKV or use an unsupported codec.';
+    showToast(message);
+    const errorNotice = document.createElement('div');
+    errorNotice.className = 'player-error-notice';
+    errorNotice.innerHTML = '<strong>Unable to play this source</strong><span>Choose an MP4 or HLS source, or try another provider.</span>';
+    document.getElementById('player-stage')?.appendChild(errorNotice);
+  }, { once: true });
+
+  const subtitleSelect = document.getElementById('subtitle-select');
+  const subtitleOption = document.getElementById('subtitle-option');
+  subtitles.forEach((subtitle, index) => {
+    const track = document.createElement('track');
+    const referer = subtitle.headers?.Referer || subtitle.headers?.referer || '';
+    track.kind = 'subtitles';
+    track.label = subtitle.lang || `Subtitle ${index + 1}`;
+    track.srclang = subtitle.langTag || 'en';
+    track.src = referer
+      ? `${API_BASE}/proxy?url=${encodeURIComponent(subtitle.url)}&referer=${encodeURIComponent(referer)}`
+      : subtitle.url;
+    video.appendChild(track);
+    const option = document.createElement('option');
+    option.value = index;
+    option.textContent = subtitle.lang || `Subtitle ${index + 1}`;
+    subtitleSelect.appendChild(option);
+  });
+  subtitleOption.hidden = subtitles.length === 0;
+  subtitleSelect.addEventListener('change', () => {
+    [...video.textTracks].forEach((track, index) => {
+      track.mode = index === Number(subtitleSelect.value) ? 'showing' : 'disabled';
+    });
+  });
+
+  const playToggle = document.getElementById('play-toggle-btn');
+  const syncPlayButton = () => { playToggle.textContent = video.paused ? '▶' : 'Ⅱ'; };
+  playToggle.addEventListener('click', () => video.paused ? video.play() : video.pause());
+  video.addEventListener('play', syncPlayButton);
+  video.addEventListener('pause', syncPlayButton);
+  document.getElementById('skip-back-btn').addEventListener('click', () => { video.currentTime = Math.max(0, video.currentTime - 10); });
+  document.getElementById('skip-forward-btn').addEventListener('click', () => { video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10); });
+  document.getElementById('playback-speed').addEventListener('change', (event) => { video.playbackRate = Number(event.target.value); });
+  document.getElementById('pip-btn').addEventListener('click', async () => {
+    if (document.pictureInPictureEnabled) {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await video.requestPictureInPicture();
+    }
+  });
+  document.getElementById('fullscreen-btn').addEventListener('click', () => {
+    const shell = document.getElementById('player-shell');
+    if (document.fullscreenElement) document.exitFullscreen();
+    else shell.requestFullscreen?.();
+  });
+  document.getElementById('change-source-btn').addEventListener('click', () => {
+    if (sourceData) showSourcePicker(sourceData, params.title, params.id, params.provider);
+    else window.location.hash = `#/detail?url=${encodeURIComponent(params.id)}&provider=${encodeURIComponent(params.provider)}`;
+  });
+  document.getElementById('player-stage').addEventListener('dblclick', (event) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    video.currentTime += event.clientX < bounds.left + bounds.width / 2 ? -10 : 10;
+  });
+  document.addEventListener('keydown', window.playerKeyHandler = (event) => {
+    if (event.target.matches('input, select, textarea')) return;
+    if (event.key === ' ') { event.preventDefault(); video.paused ? video.play() : video.pause(); }
+    if (event.key === 'ArrowLeft') video.currentTime = Math.max(0, video.currentTime - 10);
+    if (event.key === 'ArrowRight') video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10);
+    if (event.key.toLowerCase() === 'f') document.getElementById('fullscreen-btn').click();
+  });
+
+  const seasonNum = params.seasonNum ? Number(params.seasonNum) : null;
+  const episodeNum = params.episodeNum ? Number(params.episodeNum) : null;
+
+  const saveProgress = () => {
+    if (!video.duration) return;
     fetch(`${API_BASE}/history`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: params.id,
-        parentId: params.url, // Episode URL serves as context reference
+        parentId: params.parentId || null,
+        seasonNum: seasonNum,
+        episodeNum: episodeNum,
         positionMs: Math.round(video.currentTime * 1000),
-        durationMs: Math.round(video.duration * 1000)
-      })
+        durationMs: Math.round(video.duration * 1000),
+        title: params.title,
+        posterUrl: params.posterUrl || null,
+        provider: params.provider
+      }),
+      keepalive: true
     }).catch(console.error);
-  }, 8000);
+  };
+
+  // 1. Throttle updates during playback using timeupdate
+  let lastSaveTime = 0;
+  video.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    if (now - lastSaveTime < 8000) return;
+    lastSaveTime = now;
+    if (!video.paused) {
+      saveProgress();
+    }
+  });
+
+  // 2. Immediate save on important state transitions
+  video.addEventListener('pause', () => {
+    saveProgress();
+  });
+  video.addEventListener('seeked', () => {
+    saveProgress();
+  });
+
+  // 3. Save when unloading the page
+  window.addEventListener('pagehide', () => {
+    saveProgress();
+  });
+  window.savePlayerProgress = saveProgress;
 }
 
 function renderBookmarks() {
@@ -576,26 +1300,44 @@ async function deleteDownload(id) {
   }
 }
 
-function renderHistory() {
+async function renderHistory() {
   const outlet = document.getElementById('view-outlet');
-  if (state.history.length === 0) {
-    outlet.innerHTML = '<div class="loading">No watch history found.</div>';
-    return;
-  }
+  outlet.innerHTML = '<div class="loading">Loading History...</div>';
+  try {
+    const res = await fetch(`${API_BASE}/history`);
+    const historyList = await res.json();
+    if (historyList.length === 0) {
+      outlet.innerHTML = '<div class="loading">No watch history found.</div>';
+      return;
+    }
 
-  outlet.innerHTML = `
-    <div style="max-height: 600px; overflow-y: auto;">
-      ${state.history.map(item => `
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:16px; border-bottom:1px solid rgba(255,255,255,0.03);">
-          <div>
-            <div style="font-weight:600;">${item.title}</div>
-            <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">Played via ${item.provider} on ${new Date(item.timestamp).toLocaleString()}</div>
-          </div>
-          <button class="btn" style="padding: 8px 16px; font-size:14px; background:var(--color-colorPrimary);" onclick="playMedia('${item.url}', '${item.provider}', '${item.title}')">Replay</button>
-        </div>
-      `).join('')}
-    </div>
-  `;
+    outlet.innerHTML = `
+      <div style="max-height: 600px; overflow-y: auto;">
+        ${historyList.map(item => {
+          const displayTitle = item.title || 'Untitled';
+          const prov = item.provider || '';
+          const timeStr = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : 'Recently';
+          const pct = item.durationMs ? Math.round((item.positionMs / item.durationMs) * 100) : 0;
+          return `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:16px; border-bottom:1px solid rgba(255,255,255,0.03);">
+              <div>
+                <div style="font-weight:600;">${displayTitle}</div>
+                <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">
+                  Played via ${prov} on ${timeStr} · ${pct}% watched
+                </div>
+              </div>
+              <button class="btn" style="padding: 8px 16px; font-size:14px; background:var(--color-colorPrimary);" 
+                      onclick="playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})">
+                Replay
+              </button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } catch (e) {
+    outlet.innerHTML = '<div class="loading">Failed to load watch history.</div>';
+  }
 }
 
 async function renderPlugins() {
@@ -616,16 +1358,47 @@ async function renderPlugins() {
       </div>
       <div style="display:flex; flex-direction:column; gap:12px;">
         ${plugins.length === 0 ? '<div class="loading">No plugins installed.</div>' : plugins.map(p => `
-          <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.05); padding:16px; border-radius:var(--border-radius-md); display:flex; justify-content:space-between; align-items:center;">
+          <div class="plugin-row ${p.enabled ? '' : 'plugin-disabled'}">
             <div>
               <div style="font-weight:600; font-size:16px;">${p.name}</div>
-              <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">Class: ${p.pluginClassName}</div>
+              <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">${p.jarName}${p.embedded ? ' · Embedded' : ' · Uploaded'}${p.pluginClassName ? ` · ${p.pluginClassName}` : ''}</div>
             </div>
-            <span style="color:#48E484; font-weight:600; font-size:14px;">Active</span>
+            <label class="plugin-toggle">
+              <input type="checkbox" data-plugin-jar="${p.jarName}" ${p.enabled ? 'checked' : ''}>
+              <span class="plugin-toggle-track"><span></span></span>
+              <strong>${p.enabled ? (p.loaded ? 'Enabled' : 'Failed') : 'Disabled'}</strong>
+            </label>
           </div>
         `).join('')}
       </div>
     `;
+
+    outlet.querySelectorAll('[data-plugin-jar]').forEach(toggle => {
+      toggle.addEventListener('change', async () => {
+        const enabled = toggle.checked;
+        const scrollPosition = outlet.scrollTop;
+        toggle.disabled = true;
+        showToast(`${enabled ? 'Enabling' : 'Disabling'} ${toggle.dataset.pluginJar}...`);
+        try {
+          const response = await fetch(`${API_BASE}/plugins/${encodeURIComponent(toggle.dataset.pluginJar)}/enabled`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+          });
+          if (!response.ok) throw new Error(await response.text());
+          showToast(`${enabled ? 'Enabled' : 'Disabled'} ${toggle.dataset.pluginJar}`);
+          await renderPlugins();
+          requestAnimationFrame(() => {
+            const refreshedOutlet = document.getElementById('view-outlet');
+            if (refreshedOutlet) refreshedOutlet.scrollTop = scrollPosition;
+          });
+        } catch (error) {
+          toggle.checked = !enabled;
+          toggle.disabled = false;
+          showToast(error.message || 'Failed to change plugin state.');
+        }
+      });
+    });
 
     document.getElementById('plugin-file-input').addEventListener('change', async (e) => {
       const file = e.target.files[0];

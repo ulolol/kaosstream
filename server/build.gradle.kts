@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.sqlite.jdbc)
     implementation("com.google.code.gson:gson:2.10.1")
     implementation(libs.jackson.module.kotlin)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.11.0")
 }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile> {

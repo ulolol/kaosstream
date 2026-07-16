@@ -140,7 +140,7 @@ This project includes a headless JVM server module (`:server`) and a responsive 
     ./gradlew :server:installDist
     ./server/build/install/server/bin/server
     ```
-    Access the UI at `http://localhost:8080`.
+    Access the UI at `http://localhost:2106`.
 
 ### Running with Docker
 
@@ -148,5 +148,5 @@ Use Docker Compose to deploy instantly:
 ```bash
 docker compose up --build -d
 ```
-Access the server UI at `http://localhost:8080`. Mounted volume mapping `/data` contains your settings, databases, and loaded plugins.
+Access the server UI at `http://localhost:2106`. Mounted volume mapping `/data` contains your settings, databases, and loaded plugins.
 

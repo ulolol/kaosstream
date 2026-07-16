@@ -11,6 +11,18 @@ services:
     environment:
       - CS_PORT=2106
       - CS_DATA_DIR=/data
+      - CS_CHALLENGE_URL=http://challenge-browser:3210
+    depends_on:
+      - challenge-browser
+    restart: unless-stopped
+
+  challenge-browser:
+    build:
+      context: ./server/challenge
+      dockerfile: Dockerfile
+    container_name: cloudstream-challenge-browser
+    expose:
+      - "3210"
     restart: unless-stopped
 
 volumes:

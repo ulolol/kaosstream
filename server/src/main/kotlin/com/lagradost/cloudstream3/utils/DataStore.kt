@@ -1,6 +1,8 @@
 package com.lagradost.cloudstream3.utils
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.content.MockSharedPreferences
 import com.lagradost.cloudstream3.server.storage.DatabaseHelper
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
@@ -11,6 +13,14 @@ object DataStore {
 
     fun getFolderName(folder: String, path: String): String {
         return "${folder}/${path}"
+    }
+
+    fun getSharedPrefs(context: Context): SharedPreferences {
+        return MockSharedPreferences("cloudstream")
+    }
+
+    fun getDefaultSharedPrefs(context: Context): SharedPreferences {
+        return getSharedPrefs(context)
     }
 
     fun Context.containsKey(path: String): Boolean {

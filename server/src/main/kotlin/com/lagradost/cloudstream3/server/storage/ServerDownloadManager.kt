@@ -24,7 +24,7 @@ object ServerDownloadManager {
 
         val job = downloadScope.launch {
             val safeTitle = title.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-            val extension = if (url.contains(".m3u8")) "ts" else "mp4" // Fallback representation
+            val extension = "mp4"
             val targetFile = File(ServerContext.downloadsDir, "$safeTitle.$extension")
             
             Log.i(TAG, "Starting download: '$title' to ${targetFile.absolutePath}")
@@ -47,6 +47,11 @@ object ServerDownloadManager {
                 val responseCode = connection.responseCode
                 if (responseCode !in 200..299) {
                     throw java.io.IOException("Server returned HTTP response code: $responseCode")
+                }
+
+                val contentType = connection.contentType.orEmpty().lowercase()
+                if (url.contains(".m3u8", ignoreCase = true) || contentType.contains("mpegurl") || contentType.contains("vnd.apple.mpegurl")) {
+                    throw java.io.IOException("HLS downloads are not supported yet; choose a direct MP4 source")
                 }
 
                 val contentLength = connection.contentLengthLong

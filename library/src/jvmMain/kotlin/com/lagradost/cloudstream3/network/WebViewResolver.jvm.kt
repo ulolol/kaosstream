@@ -6,6 +6,9 @@ import com.lagradost.nicehttp.requestCreator
 import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
+import kotlinx.coroutines.delay
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * When used as Interceptor additionalUrls cannot be returned, use WebViewResolver(...).resolveUsingWebView(...)
@@ -68,7 +71,56 @@ actual class WebViewResolver actual constructor(
         request: Request,
         requestCallBack: (Request) -> Boolean
     ): Pair<Request?, List<Request>> {
-        TODO("Not yet implemented")
+        val baseUrl = (System.getenv("CS_CHALLENGE_URL") ?: "http://challenge-browser:3210").trimEnd('/')
+        return try {
+            val startPayload = "{\"url\":\"${request.url}\",\"userAgent\":${request.header("User-Agent")?.let { "\"${it.replace("\"", "\\\"")}\"" } ?: "null"}}"
+            val start = challengeRequest(baseUrl, "POST", "/sessions", startPayload)
+            val sessionId = Regex("""\"id\":\"([^\"]+)""").find(start)?.groupValues?.get(1)
+                ?: return null to emptyList()
+            val deadline = System.currentTimeMillis() + DEFAULT_TIMEOUT
+            while (System.currentTimeMillis() < deadline) {
+                val status = challengeRequest(baseUrl, "GET", "/sessions/$sessionId")
+                if (status.contains("\"status\":\"ready\"")) {
+                    val finalUrl = Regex("""\"url\":\"([^\"]+)""").find(status)?.groupValues?.get(1) ?: request.url.toString()
+                    val cookiesJson = challengeRequest(baseUrl, "GET", "/sessions/$sessionId/cookies")
+                    val cookies = Regex("""\{[^{}]*\}""").findAll(cookiesJson).mapNotNull { match ->
+                        val obj = match.value
+                        val name = Regex("""\"name\"\s*:\s*\"([^\"]+)\"""").find(obj)?.groupValues?.get(1)
+                        val value = Regex("""\"value\"\s*:\s*\"([^\"]*)\"""").find(obj)?.groupValues?.get(1)
+                        if (name != null && value != null) "$name=$value" else null
+                    }.joinToString("; ")
+                    val host = URL(finalUrl).host
+                    ChallengeCookieStore.apply(cookies, extractUserAgent(status), host)
+                    val resolved = request.newBuilder().url(finalUrl).apply {
+                        if (cookies.isNotBlank()) addHeader("Cookie", cookies)
+                        extractUserAgent(status)?.let { addHeader("User-Agent", it) }
+                    }.build()
+                    requestCallBack(resolved)
+                    return resolved to listOf(resolved)
+                }
+                delay(1000)
+            }
+            null to emptyList()
+        } catch (error: Throwable) {
+            logError(error)
+            null to emptyList()
+        }
     }
-}
 
+    private fun challengeRequest(baseUrl: String, method: String, path: String, payload: String? = null): String {
+        val connection = URL("$baseUrl$path").openConnection() as HttpURLConnection
+        connection.requestMethod = method
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 30_000
+        if (payload != null) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            connection.outputStream.use { it.write(payload.encodeToByteArray()) }
+        }
+        val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
+        return stream?.bufferedReader()?.use { it.readText() } ?: ""
+    }
+
+    private fun extractUserAgent(status: String): String? =
+        Regex("""\"userAgent\":\"([^\"]+)""").find(status)?.groupValues?.get(1)
+}

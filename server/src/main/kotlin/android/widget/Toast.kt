@@ -6,8 +6,6 @@ import android.view.ViewGroup
 
 open class TextView(context: Context) : View(context) {
     var text: CharSequence = ""
-    fun setText(text: CharSequence) { this.text = text }
-    fun getText(): CharSequence = text
     interface OnEditorActionListener
 }
 

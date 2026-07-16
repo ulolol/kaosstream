@@ -6,7 +6,11 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 import android.content.MockSharedPreferences
 import android.content.SharedPreferences
+import androidx.appcompat.app.AppCompatActivity
+import com.lagradost.cloudstream3.CloudStreamApp
+import com.lagradost.cloudstream3.server.storage.DatabaseHelper
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.Serializable
 import java.io.File
 import java.net.URLClassLoader
 import java.util.jar.JarFile
@@ -26,6 +30,32 @@ object ServerPluginManager {
         val classLoader: URLClassLoader,
         val pluginInstance: BasePlugin
     )
+
+    @Serializable
+    data class PluginStatus(
+        val jarName: String,
+        val name: String,
+        val pluginClassName: String?,
+        val version: Int?,
+        val enabled: Boolean,
+        val loaded: Boolean,
+        val embedded: Boolean,
+    )
+
+    private fun settingKey(jarName: String) = "plugin.enabled.$jarName"
+
+    private fun isEnabled(jarName: String): Boolean =
+        DatabaseHelper.getSetting(settingKey(jarName))?.toBooleanStrictOrNull() ?: true
+
+    private fun readManifest(jarFile: File): BasePlugin.Manifest? = try {
+        JarFile(jarFile).use { jar ->
+            val entry = jar.getJarEntry("manifest.json") ?: return null
+            json.decodeFromString<BasePlugin.Manifest>(jar.getInputStream(entry).bufferedReader().readText())
+        }
+    } catch (e: Throwable) {
+        Log.e(TAG, "Failed to read manifest from ${jarFile.name}: ${e.message}")
+        null
+    }
 
     fun loadPlugin(jarFile: File): LoadedPluginInfo {
         Log.i(TAG, "Loading plugin from ${jarFile.absolutePath}")
@@ -59,11 +89,12 @@ object ServerPluginManager {
         
         pluginInstance.filename = jarFile.absolutePath
         if (pluginInstance is Plugin) {
-            val mockContext = object : Context() {
+            val mockContext = object : AppCompatActivity() {
                 override fun getSharedPreferences(name: String, mode: Int): SharedPreferences {
                     return MockSharedPreferences(name)
                 }
             }
+            CloudStreamApp.setContext(mockContext)
             pluginInstance.load(mockContext)
         } else {
             pluginInstance.load()
@@ -131,16 +162,52 @@ object ServerPluginManager {
         }
         
         directory.listFiles { file -> file.extension.lowercase() == "jar" }?.forEach { jarFile ->
+            if (!isEnabled(jarFile.name)) {
+                Log.i(TAG, "Skipping disabled plugin: ${jarFile.name}")
+                return@forEach
+            }
             try {
                 loadPlugin(jarFile)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.e(TAG, "Failed to load plugin ${jarFile.name}: ${e.message}")
                 e.printStackTrace()
             }
         }
     }
     
-    fun getLoadedPlugins(): List<BasePlugin.Manifest> {
-        return loadedPlugins.values.map { it.manifest }
+    fun getPluginStatuses(directory: File): List<PluginStatus> {
+        val embeddedNames = File("/app/bundled-plugins").listFiles { file -> file.extension.lowercase() == "jar" }
+            ?.map { it.name }?.toSet() ?: emptySet()
+        return directory.listFiles { file -> file.extension.lowercase() == "jar" }
+            ?.mapNotNull { jarFile ->
+                val manifest = readManifest(jarFile) ?: return@mapNotNull null
+                val name = manifest.name ?: jarFile.nameWithoutExtension
+                PluginStatus(
+                    jarName = jarFile.name,
+                    name = name,
+                    pluginClassName = manifest.pluginClassName,
+                    version = manifest.version,
+                    enabled = isEnabled(jarFile.name),
+                    loaded = loadedPlugins.containsKey(name),
+                    embedded = jarFile.name in embeddedNames,
+                )
+            }?.sortedBy { it.name } ?: emptyList()
+    }
+
+    fun setPluginEnabled(directory: File, jarName: String, enabled: Boolean): PluginStatus? {
+        val base = directory.canonicalFile
+        val jarFile = File(directory, jarName).canonicalFile
+        require(jarFile.parentFile == base && jarFile.extension.equals("jar", ignoreCase = true)) { "Invalid plugin filename" }
+        require(jarFile.exists()) { "Plugin not found" }
+
+        DatabaseHelper.saveSetting(settingKey(jarFile.name), enabled.toString())
+        val manifest = readManifest(jarFile) ?: throw IllegalArgumentException("Invalid plugin manifest")
+        val name = manifest.name ?: jarFile.nameWithoutExtension
+        if (enabled) {
+            if (!loadedPlugins.containsKey(name)) loadPlugin(jarFile)
+        } else {
+            unloadPlugin(name)
+        }
+        return getPluginStatuses(directory).firstOrNull { it.jarName == jarFile.name }
     }
 }
