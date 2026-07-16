@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  cloudstream:
+    build: .
+    container_name: cloudstream-server
+    ports:
+      - "2106:2106"
+    volumes:
+      - cloudstream-data:/data
+    environment:
+      - CS_PORT=2106
+      - CS_DATA_DIR=/data
+    restart: unless-stopped
+
+volumes:
+  cloudstream-data:

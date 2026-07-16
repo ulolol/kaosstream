@@ -109,3 +109,44 @@ Even if you can't contribute to the code or documentation, we always look for th
 <a href="https://hosted.weblate.org/engage/cloudstream/">
   <img src="https://hosted.weblate.org/widgets/cloudstream/-/app/multi-auto.svg" alt="Translation status" />
 </a>
+
+
+## CloudStream Web Server & Docker
+
+This project includes a headless JVM server module (`:server`) and a responsive web application (`server/web/`) that allows running CloudStream on Linux servers or Windows platforms via Docker.
+
+### Features
+*   **Headless Engine**: Fully decoupled JVM server mapping `MainAPI` and `ExtractorApi` models.
+*   **Lite SQLite DB**: Bookmarks, search history, and progress persistence.
+*   **Local Streaming Proxy**: Bypasses browser CORS constraints dynamically with range-header proxy routes.
+*   **Dynamic Plugin Loading**: Dynamically uploads and loads KMP JAR extensions on standard JVM.
+
+### Build and Run Locally
+
+1.  **Extract UI Assets**: Run the Node script to translate colors and translations from Android XML to CSS tokens/locales:
+    ```bash
+    node server/web/extract-assets.js
+    ```
+
+2.  **Build Web Frontend**:
+    ```bash
+    cd server/web
+    bun install && bun run build
+    cd ../..
+    ```
+
+3.  **Run Server**: Run gradle wrapper with a JVM 17 runtime:
+    ```bash
+    ./gradlew :server:installDist
+    ./server/build/install/server/bin/server
+    ```
+    Access the UI at `http://localhost:8080`.
+
+### Running with Docker
+
+Use Docker Compose to deploy instantly:
+```bash
+docker compose up --build -d
+```
+Access the server UI at `http://localhost:8080`. Mounted volume mapping `/data` contains your settings, databases, and loaded plugins.
+
