@@ -1,5 +1,5 @@
 // Dynamic Router & SPA Handler
-import { getPlaybackRoute } from './capability-checker.js';
+import { checkBrowserCapabilities, getPlaybackRoute } from './capability-checker.js';
 
 const API_BASE = '/api/v1';
 
