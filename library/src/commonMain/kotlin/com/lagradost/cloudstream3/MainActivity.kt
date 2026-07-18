@@ -25,10 +25,29 @@ private val jsonResponseParser = object : ResponseParser {
     }
 }
 
+private val ytsInterceptor = okhttp3.Interceptor { chain ->
+    val request = chain.request()
+    val url = request.url
+    val host = url.host
+    if (host == "yts.bz" || host == "yts.gg" || host == "yts.mx") {
+        val newUrl = url.newBuilder()
+            .host("en.yts-official.biz")
+            .build()
+        val newRequest = request.newBuilder()
+            .url(newUrl)
+            .header("Host", "en.yts-official.biz")
+            .build()
+        chain.proceed(newRequest)
+    } else {
+        chain.proceed(request)
+    }
+}
+
 /** The default networking helper. This helper performs SSL checks.
  * If you need to make requests to websites with invalid SSL certificates use insecureApp instead. */
 var app = Requests(responseParser = jsonResponseParser).apply {
     defaultHeaders = mapOf("user-agent" to USER_AGENT)
+    baseClient = baseClient.newBuilder().addInterceptor(ytsInterceptor).build()
 }
 
 /** Same as the default app networking helper, but this instance ignores SSL certificates.
@@ -36,4 +55,6 @@ var app = Requests(responseParser = jsonResponseParser).apply {
 @UnsafeSSL
 var insecureApp = Requests(responseParser = jsonResponseParser).apply {
     defaultHeaders = mapOf("user-agent" to USER_AGENT)
+    baseClient = baseClient.newBuilder().addInterceptor(ytsInterceptor).build()
 }
+

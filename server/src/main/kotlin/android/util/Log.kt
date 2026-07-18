@@ -4,10 +4,15 @@ import java.util.regex.Pattern
 
 object Log {
     @JvmStatic fun d(tag: String, msg: String): Int { println("[$tag] DEBUG: $msg"); return 0 }
+    @JvmStatic fun d(tag: String, msg: String, tr: Throwable): Int { println("[$tag] DEBUG: $msg - ${tr.message}"); tr.printStackTrace(); return 0 }
     @JvmStatic fun i(tag: String, msg: String): Int { println("[$tag] INFO: $msg"); return 0 }
+    @JvmStatic fun i(tag: String, msg: String, tr: Throwable): Int { println("[$tag] INFO: $msg - ${tr.message}"); tr.printStackTrace(); return 0 }
     @JvmStatic fun w(tag: String, msg: String): Int { println("[$tag] WARN: $msg"); return 0 }
+    @JvmStatic fun w(tag: String, msg: String, tr: Throwable): Int { println("[$tag] WARN: $msg - ${tr.message}"); tr.printStackTrace(); return 0 }
     @JvmStatic fun e(tag: String, msg: String): Int { println("[$tag] ERROR: $msg"); return 0 }
-    @JvmStatic fun e(tag: String, msg: String, tr: Throwable): Int { println("[$tag] ERROR: $msg - ${tr.message}"); return 0 }
+    @JvmStatic fun e(tag: String, msg: String, tr: Throwable): Int { println("[$tag] ERROR: $msg - ${tr.message}"); tr.printStackTrace(); return 0 }
+    @JvmStatic fun v(tag: String, msg: String): Int { println("[$tag] VERBOSE: $msg"); return 0 }
+    @JvmStatic fun v(tag: String, msg: String, tr: Throwable): Int { println("[$tag] VERBOSE: $msg - ${tr.message}"); tr.printStackTrace(); return 0 }
 }
 
 interface AttributeSet

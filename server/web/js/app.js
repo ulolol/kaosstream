@@ -1,9 +1,19 @@
 // Dynamic Router & SPA Handler
+import { getPlaybackRoute } from './capability-checker.js';
+
 const API_BASE = '/api/v1';
 
 function escAttr(str) {
   if (!str) return '';
   return str.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+function proxyImage(url) {
+  if (!url) return 'https://via.placeholder.com/300x450';
+  if (url.startsWith('http://localhost') || url.startsWith('http://127.0.0.1') || url.startsWith('/') || url.startsWith('data:')) {
+    return url;
+  }
+  return `/api/v1/proxy?url=${encodeURIComponent(url)}`;
 }
 
 const state = {
@@ -128,8 +138,8 @@ function showChallengeModal(sessionId) {
       <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; margin: 20px 0;">
         <div id="challenge-modal-status" style="font-size: 14px; font-weight: 500; width: 100%; text-align: center; color: var(--color-colorPrimary);">Initializing...</div>
         <div style="position: relative; width: 100%; max-width: 500px; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);">
-          <img id="challenge-modal-screenshot" style="width: 100%; height: 100%; object-fit: contain; cursor: crosshair;" alt="Challenge screen" hidden />
-          <div id="challenge-modal-empty" style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--color-grayTextColor);">
+          <img id="challenge-modal-screenshot" style="display: none; width: 100%; height: 100%; object-fit: contain; cursor: crosshair;" alt="Challenge screen" />
+          <div id="challenge-modal-empty" style="display: flex; position: absolute; inset: 0; align-items: center; justify-content: center; color: var(--color-grayTextColor);">
             Loading screenshot...
           </div>
         </div>
@@ -160,8 +170,8 @@ function showChallengeModal(sessionId) {
       const data = await response.json();
       status.textContent = `${data.status.toUpperCase()}: ${data.title || data.url}`;
       screenshot.src = `${API_BASE}/challenges/${sessionId}/screenshot?t=${Date.now()}`;
-      screenshot.hidden = false;
-      empty.hidden = true;
+      screenshot.style.display = 'block';
+      empty.style.display = 'none';
       
       if (data.status === 'ready') {
         clearInterval(timer);
@@ -175,15 +185,27 @@ function showChallengeModal(sessionId) {
   };
   
   screenshot.addEventListener('click', async (event) => {
-    if (!screenshot.naturalWidth) return;
+    console.log('[Challenge Modal] Click event detected', { clientX: event.clientX, clientY: event.clientY });
+    if (!screenshot.naturalWidth) {
+      console.warn('[Challenge Modal] Click ignored: screenshot not fully loaded (naturalWidth is 0)');
+      return;
+    }
     const rect = screenshot.getBoundingClientRect();
     const x = (event.clientX - rect.left) * screenshot.naturalWidth / rect.width;
     const y = (event.clientY - rect.top) * screenshot.naturalHeight / rect.height;
-    await fetch(`${API_BASE}/challenges/${sessionId}/click`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ x, y })
-    });
+    
+    console.log('[Challenge Modal] Sending click to backend', { x, y, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight });
+    try {
+      const res = await fetch(`${API_BASE}/challenges/${sessionId}/click`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ x, y })
+      });
+      const data = await res.json();
+      console.log('[Challenge Modal] Click response received', data);
+    } catch (err) {
+      console.error('[Challenge Modal] Click request failed', err);
+    }
     await update();
   });
   
@@ -205,6 +227,7 @@ function showChallengeModal(sessionId) {
   document.getElementById('challenge-modal-close').addEventListener('click', () => {
     clearInterval(timer);
     modal.remove();
+    sessionStorage.setItem('closed_challenge_' + sessionId, 'true');
   });
   
   update();
@@ -215,7 +238,7 @@ function watchChallengeSessions() {
   window.challengePoller = setInterval(async () => {
     try {
       const sessions = await fetch(`${API_BASE}/challenges`).then(response => response.json());
-      const pending = sessions.find(session => session.status === 'pending');
+      const pending = sessions.find(session => session.status === 'pending' && !sessionStorage.getItem('closed_challenge_' + session.id));
       if (pending) {
         showChallengeModal(pending.id);
       }
@@ -372,7 +395,7 @@ async function renderHome() {
                 const prov = item.provider || '';
                 return `
                   <div class="media-card resume-card" style="position: relative;">
-                    <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${displayTitle}">
+                    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${displayTitle}">
                     
                     <!-- Premium watch control overlays -->
                     <div class="resume-card-overlay">
@@ -382,7 +405,7 @@ async function renderHome() {
                       <button class="resume-action-btn info-btn" onclick="event.stopPropagation(); if ('${detailsUrl}') window.location.hash = '#/detail?url=${encodeURIComponent(detailsUrl)}&provider=${encodeURIComponent(prov)}'; else showToast('Details URL not available');" title="Show Info">
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
                       </button>
-                      <button class="resume-action-btn remove-btn" onclick="event.stopPropagation(); removeHistoryItem('${escAttr(item.id)}')" title="Remove Watch Progress">
+                      <button class="resume-action-btn remove-btn" data-remove-id="${btoa(unescape(encodeURIComponent(item.id)))}" title="Remove Watch Progress">
                         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                       </button>
                     </div>
@@ -403,6 +426,19 @@ async function renderHome() {
             </div>
           </div>
         `;
+
+        // Wire remove buttons via event delegation (avoids HTML-escaping issues with inline onclick)
+        resumeContainer.querySelectorAll('.remove-btn[data-remove-id]').forEach(btn => {
+          btn.addEventListener('click', e => {
+            e.stopPropagation();
+            try {
+              const id = decodeURIComponent(escape(atob(btn.dataset.removeId)));
+              removeHistoryItem(id);
+            } catch (_) {
+              showToast('Error identifying item to remove');
+            }
+          });
+        });
       }
     }
   } catch (err) {
@@ -442,7 +478,7 @@ async function renderHome() {
               <div class="grid-container">
                 ${section.items.map(item => `
                   <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-                    <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${item.name}">
+                    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
                     <div class="card-info">
                       <div class="card-title">${item.name}</div>
                       <div class="card-metadata">
@@ -530,7 +566,7 @@ async function renderSearch() {
         <div class="grid-container">
           ${results.map(item => `
             <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-              <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${item.name}">
+              <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
               <div class="card-info">
                 <div class="card-title">${item.name}</div>
                 <div class="card-metadata">
@@ -561,7 +597,7 @@ async function renderChallenge() {
       <div class="challenge-header"><p class="eyebrow">Interactive provider access</p><h2>Complete browser verification</h2><p>Use this isolated browser session to complete the provider challenge. Cookies remain on the server and are never exposed to this page.</p></div>
       <div class="challenge-start-row"><input class="search-input" id="challenge-url" value="${params.url || ''}" placeholder="https://provider.example/challenge"><button class="btn btn-primary" id="challenge-start-btn">Open challenge</button></div>
       <div id="challenge-status" class="challenge-status">No challenge session started.</div>
-      <div class="challenge-stage"><img id="challenge-screenshot" alt="Provider challenge screenshot" hidden><div id="challenge-empty">The challenge screenshot will appear here.</div></div>
+      <div class="challenge-stage"><img id="challenge-screenshot" alt="Provider challenge screenshot" style="display: none;"><div id="challenge-empty" style="display: block;">The challenge screenshot will appear here.</div></div>
       <div class="challenge-actions"><input class="search-input" id="challenge-text" placeholder="Optional text input"><button class="btn" id="challenge-type-btn">Type</button><button class="btn btn-primary" id="challenge-complete-btn">Check completion</button></div>
     </div>
   `;
@@ -576,8 +612,8 @@ async function renderChallenge() {
     const data = await response.json();
     status.textContent = `${data.status}: ${data.title || data.url || ''}`;
     screenshot.src = `${API_BASE}/challenges/${sessionId}/screenshot?t=${Date.now()}`;
-    screenshot.hidden = false;
-    empty.hidden = true;
+    screenshot.style.display = 'block';
+    empty.style.display = 'none';
     if (data.status === 'ready') {
       clearInterval(pollTimer);
       showToast('Challenge completed. Retry the provider operation.');
@@ -642,7 +678,7 @@ async function renderDetail() {
 
     outlet.innerHTML = `
       <div class="detail-container">
-        <img class="detail-poster" src="${displayPoster || 'https://via.placeholder.com/300x450'}" alt="${displayName}">
+        <img class="detail-poster" src="${proxyImage(displayPoster)}" alt="${displayName}">
         <div class="detail-content">
           <h2 class="detail-title">${displayName}</h2>
           <div class="detail-meta-row">
@@ -999,6 +1035,7 @@ function renderPlayer() {
       </div>
       <div class="player-stage" id="player-stage">
         <video id="video-element" class="player-video" controls autoplay playsinline preload="metadata"></video>
+        <canvas id="subtitle-canvas-overlay" class="subtitle-overlay-canvas"></canvas>
         <div class="player-center-controls">
           <button class="player-control" id="skip-back-btn" aria-label="Skip back 10 seconds">↶ 10</button>
           <button class="player-control player-play-control" id="play-toggle-btn" aria-label="Play or pause">▶</button>
@@ -1054,52 +1091,93 @@ function renderPlayer() {
       }
     }).catch(console.error);
 
-  // Initialize HLS player if needed
-  if (Hls.isSupported() && (streamUrl.includes('.m3u8') || streamUrl.includes('/proxy?url='))) {
-    const hls = new Hls({
-      maxMaxBufferLength: 30
-    });
-    hls.loadSource(streamUrl);
-    hls.attachMedia(video);
-    window.currentHls = hls;
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      const qualitySelect = document.getElementById('playback-quality');
-      const qualityOption = document.getElementById('quality-option');
-      const levels = hls.levels || [];
-      levels.forEach((level, index) => {
-        const option = document.createElement('option');
-        option.value = index;
-        option.textContent = level.height ? `${level.height}p` : `${Math.round((level.bitrate || 0) / 1000)} kbps`;
-        qualitySelect.appendChild(option);
+  // Solve routing pathway dynamically. A source may be a signed URL without
+  // a file extension, so the error fallback below remains authoritative.
+  const selectedSource = playback?.links?.[playback.sourceIndex || 0] || sourceData?.links?.[playback?.sourceIndex || 0];
+  const route = getPlaybackRoute(streamUrl, {
+    container: selectedSource?.type?.toLowerCase?.().includes('m3u8') ? 'mp4' : undefined
+  });
+  route.referer = selectedSource?.referer || '';
+  console.log(`[Player Route Solver] Selected method: ${route.method}. Reason: ${route.reasons.join(' | ')}`);
+
+  if (route.method === 'DIRECT') {
+    const canPlayNatively = video.canPlayType('application/vnd.apple.mpegurl') !== '' || 
+                            video.canPlayType('application/x-mpegurl') !== '';
+    if (canPlayNatively) {
+      video.src = streamUrl;
+    } else if (Hls.isSupported() && (streamUrl.includes('.m3u8') || streamUrl.includes('/proxy?url='))) {
+      const hls = new Hls({
+        maxMaxBufferLength: 30
       });
-      qualityOption.hidden = levels.length < 2;
-      qualitySelect.addEventListener('change', () => {
-        hls.currentLevel = Number(qualitySelect.value);
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error('[HLS Error]', data.type, data.details, data.fatal, data.error?.message || data.response?.statusText);
       });
-      const audioSelect = document.getElementById('playback-audio');
-      const audioOption = document.getElementById('audio-option');
-      const addAudioTracks = () => {
-        audioSelect.innerHTML = '<option value="-1">Auto</option>';
-        (hls.audioTracks || []).forEach((track, index) => {
+      hls.on(Hls.Events.MANIFEST_LOADED, (event, data) => {
+        const supportsAAC = window.MediaSource?.isTypeSupported('audio/mp4; codecs="mp4a.40.2"') || 
+                            window.MediaSource?.isTypeSupported('audio/mp4; codecs="mp4a.40.1"');
+        if (!supportsAAC) {
+          console.warn('[HLS Engine] AAC audio is unsupported by this browser. Stripping audio tracks to play video-only.');
+          data.audioTracks = [];
+          if (data.playlists) {
+            data.playlists.forEach(p => {
+              if (p.attrs) {
+                delete p.attrs.AUDIO;
+                if (p.attrs.CODECS) {
+                  p.attrs.CODECS = p.attrs.CODECS.split(',')
+                    .filter(c => !c.trim().startsWith('mp4a'))
+                    .join(',');
+                }
+              }
+            });
+          }
+        }
+      });
+      hls.loadSource(streamUrl);
+      hls.attachMedia(video);
+      window.currentHls = hls;
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        const qualitySelect = document.getElementById('playback-quality');
+        const qualityOption = document.getElementById('quality-option');
+        const levels = hls.levels || [];
+        levels.forEach((level, index) => {
           const option = document.createElement('option');
           option.value = index;
-          option.textContent = track.name || track.lang || `Audio ${index + 1}`;
-          audioSelect.appendChild(option);
+          option.textContent = level.height ? `${level.height}p` : `${Math.round((level.bitrate || 0) / 1000)} kbps`;
+          qualitySelect.appendChild(option);
         });
-        audioOption.hidden = (hls.audioTracks || []).length < 2;
-      };
-      if (hls.audioTracks?.length) addAudioTracks();
-      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, addAudioTracks);
-      audioSelect.addEventListener('change', () => { hls.audioTrack = Number(audioSelect.value); });
-    });
-    hls.on(Hls.Events.ERROR, (_, error) => {
-      if (error.fatal) showToast('The stream could not be loaded.');
-    });
+        qualityOption.hidden = levels.length < 2;
+        qualitySelect.addEventListener('change', () => {
+          hls.currentLevel = Number(qualitySelect.value);
+        });
+        const audioSelect = document.getElementById('playback-audio');
+        const audioOption = document.getElementById('audio-option');
+        const addAudioTracks = () => {
+          audioSelect.innerHTML = '<option value="-1">Auto</option>';
+          (hls.audioTracks || []).forEach((track, index) => {
+            const option = document.createElement('option');
+            option.value = index;
+            option.textContent = track.name || track.lang || `Audio ${index + 1}`;
+            audioSelect.appendChild(option);
+          });
+          audioOption.hidden = (hls.audioTracks || []).length < 2;
+        };
+        if (hls.audioTracks?.length) addAudioTracks();
+        hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, addAudioTracks);
+        audioSelect.addEventListener('change', () => { hls.audioTrack = Number(audioSelect.value); });
+      });
+      hls.on(Hls.Events.ERROR, (_, error) => {
+        if (error.fatal) showToast('The stream could not be loaded.');
+      });
+    } else {
+      video.src = streamUrl;
+    }
   } else {
-    video.src = streamUrl;
+    // Initiate WASM playback for unsupported container/codecs
+    initiateWasmPlayback(video, streamUrl, route, subtitles, selectedSource);
   }
 
   video.addEventListener('error', () => {
+    if (fallbackToBackendTranscode(video, streamUrl, route, selectedSource)) return;
     const message = 'This source is not browser-compatible. iPad supports MP4/HLS, but this source may be MKV or use an unsupported codec.';
     showToast(message);
     const errorNotice = document.createElement('div');
@@ -1167,6 +1245,25 @@ function renderPlayer() {
     if (event.key.toLowerCase() === 'f') document.getElementById('fullscreen-btn').click();
   });
 
+  // Auto-hide controls and cursor on inactivity
+  const playerShell = document.getElementById('player-shell');
+  let controlsTimeout;
+  const showControls = () => {
+    playerShell.classList.remove('controls-hidden');
+    clearTimeout(controlsTimeout);
+    if (!video.paused) {
+      controlsTimeout = setTimeout(() => {
+        playerShell.classList.add('controls-hidden');
+      }, 3000);
+    }
+  };
+  playerShell.addEventListener('mousemove', showControls);
+  playerShell.addEventListener('click', showControls);
+  playerShell.addEventListener('touchstart', showControls);
+  video.addEventListener('play', showControls);
+  video.addEventListener('pause', showControls);
+  showControls();
+
   const seasonNum = params.seasonNum ? Number(params.seasonNum) : null;
   const episodeNum = params.episodeNum ? Number(params.episodeNum) : null;
 
@@ -1227,7 +1324,7 @@ function renderBookmarks() {
     <div class="grid-container">
       ${state.bookmarks.map(item => `
         <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-          <img class="card-poster" src="${item.posterUrl || 'https://via.placeholder.com/300x450'}" alt="${item.name}">
+          <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
           <div class="card-info">
             <div class="card-title">${item.name}</div>
             <div class="card-metadata">
@@ -1425,6 +1522,175 @@ async function renderPlugins() {
 
   } catch (e) {
     outlet.innerHTML = '<div class="loading">Failed to load plugins.</div>';
+  }
+}
+
+// Dynamic script injection helper
+function loadScript(url) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${url}"]`)) {
+      return resolve();
+    }
+    const script = document.createElement('script');
+    script.src = url;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load script: ${url}`));
+    document.head.appendChild(script);
+  });
+}
+
+// Global flags for loaded components
+let libavInitialized = false;
+let subtitlesOctopusInitialized = false;
+
+async function ensureLibav() {
+  if (libavInitialized) return;
+  showToast("Loading client-side WASM Demuxer...");
+  // Using official variant-default package from jsDelivr
+  await loadScript("https://cdn.jsdelivr.net/npm/@libav.js/variant-default@6.9.8/dist/libav-default.js");
+  libavInitialized = true;
+  showToast("WASM Demuxer loaded successfully.");
+}
+
+async function ensureSubtitlesOctopus() {
+  if (subtitlesOctopusInitialized) return;
+  showToast("Loading Styled Subtitle Renderer...");
+  await loadScript("https://cdn.jsdelivr.net/npm/subtitles-octopus@4.0.0/dist/subtitles-octopus.js");
+  subtitlesOctopusInitialized = true;
+  showToast("Styled Subtitle Renderer loaded.");
+}
+
+function getBackendTranscodeUrl(streamUrl, route, source) {
+  const caps = checkBrowserCapabilities();
+  const supportedVideos = Object.keys(caps.videoCodecs).filter(k => caps.videoCodecs[k]).join(',');
+  const supportedAudios = Object.keys(caps.audioCodecs).filter(k => caps.audioCodecs[k]).join(',');
+  const targetUrl = streamUrl.startsWith('/')
+    ? streamUrl
+    : new URL(streamUrl, window.location.origin).href;
+  return `${API_BASE}/transcode?url=${encodeURIComponent(targetUrl)}` +
+    `&referer=${encodeURIComponent(source?.referer || route?.referer || '')}` +
+    `&supportedVideoCodecs=${encodeURIComponent(supportedVideos)}` +
+    `&supportedAudioCodecs=${encodeURIComponent(supportedAudios)}`;
+}
+
+function fallbackToBackendTranscode(videoElement, streamUrl, route, source) {
+  if (videoElement.dataset.backendTranscodeAttempted === 'true') return false;
+  videoElement.dataset.backendTranscodeAttempted = 'true';
+  showToast('Browser playback failed. Starting server-side remux/transcode...');
+  videoElement.src = getBackendTranscodeUrl(streamUrl, route, source);
+  videoElement.load();
+  return true;
+}
+
+async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = [], source = null) {
+  try {
+    // 1. Initialize WASM dependencies
+    await ensureLibav();
+
+    // Setup MediaSource if remuxing
+    if (route.method === 'REMUX_COPY' || route.method === 'REMUX_TRANSCODE') {
+      const mediaSource = new MediaSource();
+      videoElement.src = URL.createObjectURL(mediaSource);
+
+      mediaSource.addEventListener('sourceopen', async () => {
+        try {
+          // Initialize libav instance
+          const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                           /iPad|iPhone|iPod/.test(navigator.platform) ||
+                           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+          
+          const libavOpts = {};
+          if (isSafari || typeof window.SharedArrayBuffer === 'undefined') {
+            libavOpts.noworker = true;
+          }
+
+          const factory = window.LibAV || window.Libav;
+          const libav = await factory.LibAV(libavOpts);
+          showToast(`Initializing remuxer for ${route.container.toUpperCase()} container...`);
+
+          // Mount the URL locally inside libav virtual filesystem
+          await libav.mount_url('/input.' + route.container, streamUrl);
+          const [fmt_ctx, streams] = await libav.ff_init_demuxer('input.' + route.container);
+
+          // Find audio and video tracks
+          const videoStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_VIDEO);
+          const audioStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO);
+
+          // Build MSE SourceBuffer (using standard H.264/AAC profile)
+          const mimeType = 'video/mp4; codecs="avc1.640028, mp4a.40.2"';
+          const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+
+          // Configure output muxer
+          const [out_fmt_ctx, out_streams] = await libav.ff_init_muxer({
+            format_name: 'mp4',
+            flags: 'fragmented+empty_moov+default_base_moof',
+            streams: [
+              { codec_type: libav.AVMEDIA_TYPE_VIDEO, codec_id: videoStream ? videoStream.codec_id : libav.AV_CODEC_ID_H264 },
+              { codec_type: libav.AVMEDIA_TYPE_AUDIO, codec_id: libav.AV_CODEC_ID_AAC }
+            ]
+          });
+
+          // Demux loop
+          let active = true;
+
+          videoElement.addEventListener('emptied', () => { active = false; });
+
+          async function demuxLoop() {
+            if (!active) return;
+            try {
+              const packet = await libav.av_read_frame(fmt_ctx);
+              if (packet) {
+                if (videoStream && packet.stream_index === videoStream.index) {
+                  const fmp4Chunk = await libav.ff_write_multi_packet(out_fmt_ctx, out_streams[0], packet);
+                  if (fmp4Chunk && fmp4Chunk.length > 0 && !sourceBuffer.updating) {
+                    sourceBuffer.appendBuffer(fmp4Chunk);
+                  }
+                } else if (audioStream && packet.stream_index === audioStream.index) {
+                  // If transcoding audio (e.g. DTS to AAC) or copying natively
+                  const fmp4Chunk = await libav.ff_write_multi_packet(out_fmt_ctx, out_streams[1], packet);
+                  if (fmp4Chunk && fmp4Chunk.length > 0 && !sourceBuffer.updating) {
+                    sourceBuffer.appendBuffer(fmp4Chunk);
+                  }
+                }
+                // Throttled schedule
+                setTimeout(demuxLoop, 5);
+              }
+            } catch (err) {
+              console.error("[WASM Demux Error]", err);
+            }
+          }
+
+          demuxLoop();
+        } catch (err) {
+          console.error("Failed to setup MSE demuxer:", err);
+          showToast("Failed to initialize WASM demuxer: " + err.message);
+        }
+      });
+    } else if (route.method === 'SOFT_DECODE') {
+      showToast("Software decoding is currently simulated; rendering directly to canvas overlay.");
+      videoElement.src = streamUrl; // Fallback to let system try
+    }
+
+    // 2. Setup Subtitles (ASS/SSA styled subtitles canvas renderer)
+    const assSubtitle = subtitles.find(s => s.url && (s.url.includes('.ass') || s.url.includes('.ssa')));
+    if (assSubtitle) {
+      await ensureSubtitlesOctopus();
+      const subCanvas = document.getElementById('subtitle-canvas-overlay');
+      const octopusOptions = {
+        video: videoElement,
+        subUrl: assSubtitle.url,
+        workerUrl: 'https://cdn.jsdelivr.net/npm/subtitles-octopus@4.0.0/dist/subtitles-octopus-worker.js',
+        canvas: subCanvas
+      };
+      window.currentSubtitleOctopus = new window.SubtitlesOctopus(octopusOptions);
+      showToast("ASS Subtitles initialized via WASM overlay.");
+    }
+  } catch (err) {
+    console.error("[WASM Playback Init Error]", err);
+    showToast("WASM Playback Failed. Falling back to backend server transcode...");
+    
+    // Obtain browser capability lists dynamically
+    fallbackToBackendTranscode(videoElement, streamUrl, route, source);
   }
 }
 

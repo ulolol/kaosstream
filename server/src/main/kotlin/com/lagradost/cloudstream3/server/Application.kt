@@ -43,6 +43,12 @@ import java.net.URL
 import java.util.Collections
 
 @Serializable
+private data class ProbeStream(val codec_type: String, val codec_name: String? = null)
+
+@Serializable
+private data class ProbeResult(val streams: List<ProbeStream>? = null)
+
+@Serializable
 data class SearchResponseDto(
     val name: String,
     val url: String,
@@ -316,6 +322,12 @@ fun Application.module() {
         })
     }
     
+    intercept(ApplicationCallPipeline.Plugins) {
+        call.response.headers.append("Cross-Origin-Opener-Policy", "same-origin")
+        call.response.headers.append("Cross-Origin-Embedder-Policy", "credentialless")
+        proceed()
+    }
+    
     install(CORS) {
         anyHost()
         allowHeader("Content-Type")
@@ -445,12 +457,23 @@ fun Application.module() {
                 APIHolder.allProviders
             }
             
-            val providerResults = coroutineScope {
+        val providerResults = coroutineScope {
                 apisToSearch.map { api ->
                     async {
                         try {
                             val providerResults = withTimeoutOrNull(api.searchTimeoutMs ?: 8_000L) {
-                                api.search(query)?.map { response ->
+                                val searchRes = try {
+                                    api.search(query, 1)?.items
+                                } catch (innerE: Throwable) {
+                                    Log.w("Search", "api.search(query, 1) failed for ${api.name}: $innerE")
+                                    innerE.printStackTrace()
+                                    if (innerE is NotImplementedError || innerE is LinkageError || innerE.message?.contains("not implemented", ignoreCase = true) == true) {
+                                        api.search(query)
+                                    } else {
+                                        throw innerE
+                                    }
+                                }
+                                searchRes?.map { response ->
                                     SearchResponseDto(
                                         name = response.name,
                                         url = response.url,
@@ -478,47 +501,53 @@ fun Application.module() {
                                     SearchProviderResult(providerResults, null)
                                 }
                             }
-                        } catch (e: NotImplementedError) {
-                            if (api.hasMainPage) {
-                                try {
-                                    val fallback = withTimeoutOrNull(api.getMainPageTimeoutMs ?: 8_000L) {
-                                        api.mainPage.take(12).flatMap { requestData ->
-                                            api.getMainPage(
-                                                1,
-                                                com.lagradost.cloudstream3.MainPageRequest(requestData.name, requestData.data, requestData.horizontalImages)
-                                            )?.items.orEmpty().flatMap { it.list }
-                                        }.filter { query.equals("popular", true) || it.name.contains(query, true) }.map { it.toDto() }
+                        } catch (e: Throwable) {
+                            val isNotImplemented = e is NotImplementedError || e is LinkageError || e.message?.contains("not implemented", ignoreCase = true) == true
+                            if (isNotImplemented) {
+                                Log.w("Search", "Provider ${api.name} search not implemented fallback triggered: $e")
+                                e.printStackTrace()
+                                if (api.hasMainPage) {
+                                    try {
+                                        val fallback = withTimeoutOrNull(api.getMainPageTimeoutMs ?: 8_000L) {
+                                            api.mainPage.take(12).flatMap { requestData ->
+                                                api.getMainPage(
+                                                    1,
+                                                    com.lagradost.cloudstream3.MainPageRequest(requestData.name, requestData.data, requestData.horizontalImages)
+                                                )?.items.orEmpty().flatMap { it.list }
+                                            }.filter { query.equals("popular", true) || it.name.contains(query, true) }.map { it.toDto() }
+                                        }
+                                        SearchProviderResult(
+                                            fallback.orEmpty(),
+                                            if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Homepage fallback timed out", true) else null
+                                        )
+                                    } catch (fallbackError: Throwable) {
+                                        Log.w("Search", "Fallback main page for ${api.name} failed: $fallbackError")
+                                        SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Provider search is not implemented"))
                                     }
-                                    SearchProviderResult(
-                                        fallback.orEmpty(),
-                                        if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Homepage fallback timed out", true) else null
-                                    )
-                                } catch (_: Throwable) {
+                                } else if (api.hasQuickSearch) {
+                                    try {
+                                        val fallback = withTimeoutOrNull(api.quickSearchTimeoutMs ?: 8_000L) {
+                                            api.quickSearch(query).orEmpty().map { it.toDto() }
+                                        }
+                                        SearchProviderResult(
+                                            fallback.orEmpty(),
+                                            if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Fallback quick search timed out", true) else null
+                                        )
+                                    } catch (fallbackError: Throwable) {
+                                        SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Search and quick search are unavailable"))
+                                    }
+                                } else {
                                     SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Provider search is not implemented"))
                                 }
-                            } else if (api.hasQuickSearch) {
-                                try {
-                                    val fallback = withTimeoutOrNull(api.quickSearchTimeoutMs ?: 8_000L) {
-                                        api.quickSearch(query).orEmpty().map { it.toDto() }
-                                    }
-                                    SearchProviderResult(
-                                        fallback.orEmpty(),
-                                        if (fallback == null) ProviderFailureDto(api.name, "search", "TIMEOUT", "Fallback quick search timed out", true) else null
-                                    )
-                                } catch (fallbackError: Throwable) {
-                                    SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Search and quick search are unavailable"))
+                            } else {
+                                val code = e.failureCode()
+                                if (code == "CHALLENGE_REQUIRED") {
+                                    Log.w("Search", "Provider ${api.name} unavailable in headless mode: ${e.failureMessage()}")
+                                } else {
+                                    Log.e("Search", "Error searching ${api.name}: ${e.failureMessage()}")
                                 }
-                            } else {
-                                SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", "UNSUPPORTED", "Provider search is not implemented"))
+                                SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", code, e.failureMessage()))
                             }
-                        } catch (e: Throwable) {
-                            val code = e.failureCode()
-                            if (e is NotImplementedError || e is LinkageError || code == "CHALLENGE_REQUIRED") {
-                                Log.w("Search", "Provider ${api.name} unavailable in headless mode: ${e.failureMessage()}")
-                            } else {
-                                Log.e("Search", "Error searching ${api.name}: ${e.failureMessage()}")
-                            }
-                            SearchProviderResult(emptyList(), ProviderFailureDto(api.name, "search", code, e.failureMessage()))
                         }
                     }
                 }.awaitAll()
@@ -750,8 +779,14 @@ fun Application.module() {
             connection.connect()
             
             val status = connection.responseCode
-            val contentType = connection.contentType ?: "video/mp4"
-            val contentLength = connection.contentLengthLong
+            val rawContentType = connection.contentType ?: "video/mp4"
+            val targetPath = targetUrl.substringBefore("?").lowercase()
+            val contentType = if (!rawContentType.startsWith("image/", ignoreCase = true) && 
+                                  (targetPath.endsWith(".xls") || targetPath.endsWith(".ts"))) {
+                "video/mp2t"
+            } else {
+                rawContentType
+            }
 
             if (status !in 200..299 && status != HttpURLConnection.HTTP_PARTIAL) {
                 val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText().take(500) }.orEmpty()
@@ -762,23 +797,165 @@ fun Application.module() {
                 )
                 return@get
             }
+
+            val isM3u8 = contentType.contains("mpegurl", ignoreCase = true) || 
+                         contentType.contains("x-mpegurl", ignoreCase = true) ||
+                         targetUrl.substringBefore("?").endsWith(".m3u8", ignoreCase = true) ||
+                         targetUrl.contains("m3u8", ignoreCase = true)
             
             call.response.status(HttpStatusCode.fromValue(status))
             call.response.headers.append("Content-Type", contentType)
             call.response.headers.append("Access-Control-Allow-Origin", "*")
             call.response.headers.append("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
             call.response.headers.append("Accept-Ranges", "bytes")
+            call.response.headers.append("Cross-Origin-Resource-Policy", "cross-origin")
             
             connection.headerFields.forEach { (key, value) ->
-                if (key != null && (key.equals("Content-Range", ignoreCase = true) || key.equals("Content-Length", ignoreCase = true))) {
-                    call.response.headers.append(key, value.joinToString(","))
+                if (key != null) {
+                    if (key.equals("Content-Range", ignoreCase = true) || 
+                        (!isM3u8 && key.equals("Content-Length", ignoreCase = true))) {
+                        call.response.headers.append(key, value.joinToString(","))
+                    }
                 }
             }
             
-            call.respondOutputStream(ContentType.parse(contentType), HttpStatusCode.fromValue(status)) {
-                connection.inputStream.use { input ->
-                    input.copyTo(this)
+            if (isM3u8) {
+                val m3u8Content = connection.inputStream.use { it.bufferedReader().readText() }
+                val baseUri = try { java.net.URI(targetUrl) } catch (e: Exception) { null }
+                val refererParam = if (referer != null) "&referer=${java.net.URLEncoder.encode(referer, "UTF-8")}" else ""
+                
+                val rewrittenContent = m3u8Content.lineSequence().map { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                        line
+                    } else {
+                        val absoluteUrl = if (baseUri != null) {
+                            try {
+                                baseUri.resolve(trimmed).toString()
+                            } catch (e: Exception) {
+                                if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                                    trimmed
+                                } else {
+                                    val baseWithoutPath = targetUrl.substringBeforeLast("/")
+                                    "$baseWithoutPath/$trimmed"
+                                }
+                            }
+                        } else {
+                            trimmed
+                        }
+                        "/api/v1/proxy?url=${java.net.URLEncoder.encode(absoluteUrl, "UTF-8")}$refererParam"
+                    }
+                }.joinToString("\n")
+                
+                val bytes = rewrittenContent.toByteArray(Charsets.UTF_8)
+                call.response.headers.append("Content-Length", bytes.size.toString())
+                call.respondBytes(bytes, ContentType.parse(contentType), HttpStatusCode.fromValue(status))
+            } else {
+                call.respondOutputStream(ContentType.parse(contentType), HttpStatusCode.fromValue(status)) {
+                    connection.inputStream.use { input ->
+                        input.copyTo(this)
+                    }
                 }
+            }
+        }
+
+        // --- 6.1. Smart Backend Transcoding/Remuxing Route ---
+        get("/api/v1/transcode") {
+            val requestedUrl = call.request.queryParameters["url"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing url")
+            val url = if (requestedUrl.startsWith("/")) {
+                "http://127.0.0.1:${System.getenv("CS_PORT")?.toIntOrNull() ?: 2106}$requestedUrl"
+            } else {
+                requestedUrl
+            }
+            val referer = call.request.queryParameters["referer"]
+
+            // Parse client capabilities (defaulting to safe baseline codecs if missing)
+            val supportedVideos = call.request.queryParameters["supportedVideoCodecs"]
+                ?.split(",")?.map { it.trim().lowercase() }?.toSet() ?: setOf("h264")
+            val supportedAudios = call.request.queryParameters["supportedAudioCodecs"]
+                ?.split(",")?.map { it.trim().lowercase() }?.toSet() ?: setOf("aac", "mp3")
+
+            val headers = buildString {
+                if (!referer.isNullOrBlank()) append("Referer: $referer\r\n")
+                append("User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n")
+            }
+
+            // Probe stream codecs using ffprobe
+            val probeCommand = listOf(
+                "ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
+                "-headers", headers, url
+            )
+            var videoCodec: String? = null
+            var audioCodec: String? = null
+            try {
+                val probeProcess = ProcessBuilder(probeCommand).start()
+                val output = probeProcess.inputStream.bufferedReader().use { it.readText() }
+                probeProcess.waitFor()
+                val json = Json { ignoreUnknownKeys = true }
+                val result = json.decodeFromString<ProbeResult>(output)
+                videoCodec = result.streams?.find { it.codec_type == "video" }?.codec_name?.lowercase()
+                audioCodec = result.streams?.find { it.codec_type == "audio" }?.codec_name?.lowercase()
+            } catch (e: Throwable) {
+                Log.w("Transcode", "Failed to probe stream, defaulting to full transcode: ${e.message}")
+            }
+
+            // Determine if transcoding is required by matching ffprobe codec against client list
+            val browserSupportsVideo = videoCodec != null && supportedVideos.contains(videoCodec)
+            val browserSupportsAudio = audioCodec != null && supportedAudios.contains(audioCodec)
+
+            val command = mutableListOf<String>()
+            command.addAll(listOf("ffmpeg", "-hide_banner", "-loglevel", "error"))
+
+            val transcodeVideo = !browserSupportsVideo
+            val transcodeAudio = !browserSupportsAudio
+
+            if (transcodeVideo) {
+                val hasVaapi = java.io.File("/dev/dri/renderD128").exists()
+                if (hasVaapi) {
+                    command.addAll(listOf("-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi"))
+                }
+            }
+
+            command.addAll(listOf("-headers", headers, "-i", url))
+
+            // Video codec selection: Copy if supported, otherwise transcode (VAAPI / Soft fallback)
+            if (transcodeVideo) {
+                val hasVaapi = java.io.File("/dev/dri/renderD128").exists()
+                if (hasVaapi) {
+                    command.addAll(listOf("-c:v", "h264_vaapi"))
+                } else {
+                    command.addAll(listOf("-c:v", "libx264", "-preset", "ultrafast"))
+                }
+            } else {
+                command.addAll(listOf("-c:v", "copy"))
+            }
+
+            // Audio codec selection: Copy if supported, otherwise transcode to AAC
+            if (transcodeAudio) {
+                command.addAll(listOf("-c:a", "aac", "-b:a", "128k"))
+            } else {
+                command.addAll(listOf("-c:a", "copy"))
+            }
+
+            command.addAll(listOf(
+                "-movflags", "fragmented+empty_moov+default_base_moof+faststart",
+                "-f", "mp4",
+                "pipe:1"
+            ))
+
+            val process = ProcessBuilder(command).start()
+
+            call.response.header("Content-Type", "video/mp4")
+            call.response.header("Cross-Origin-Resource-Policy", "cross-origin")
+            
+            try {
+                call.respondOutputStream(ContentType.parse("video/mp4")) {
+                    process.inputStream.use { input ->
+                        input.copyTo(this)
+                    }
+                }
+            } finally {
+                process.destroy()
             }
         }
         

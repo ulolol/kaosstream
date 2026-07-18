@@ -14,7 +14,16 @@ services:
       - CS_CHALLENGE_URL=http://challenge-browser:3210
     depends_on:
       - challenge-browser
+    devices:
+      - /dev/dri:/dev/dri
     restart: unless-stopped
+    extra_hosts:
+      - "yts.bz:104.26.10.83"
+      - "yts.gg:104.26.12.3"
+      - "yts.lt:104.26.2.124"
+      - "yts.am:104.21.13.157"
+      - "yts.ag:104.21.79.82"
+
 
   challenge-browser:
     build:
@@ -24,6 +33,13 @@ services:
     expose:
       - "3210"
     restart: unless-stopped
+    extra_hosts:
+      - "yts.bz:104.26.10.83"
+      - "yts.gg:104.26.12.3"
+      - "yts.lt:104.26.2.124"
+      - "yts.am:104.21.13.157"
+      - "yts.ag:104.21.79.82"
+
 
 volumes:
   cloudstream-data:

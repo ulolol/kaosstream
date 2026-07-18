@@ -12,8 +12,19 @@ abstract class Uri {
     abstract val query: String?
     abstract val scheme: String?
 
+    abstract val lastPathSegment: String?
+    abstract val pathSegments: List<String>
+    abstract val encodedQuery: String?
+    abstract val schemeSpecificPart: String?
+    abstract val encodedSchemeSpecificPart: String?
+    abstract val authority: String?
+    abstract val encodedAuthority: String?
+    abstract val fragment: String?
+    abstract val encodedFragment: String?
+
     abstract fun getQueryParameter(key: String): String?
     abstract fun getQueryParameters(key: String): List<String>
+    abstract fun getQueryParameterNames(): Set<String>
     abstract fun buildUpon(): Builder
 
     class Builder {
@@ -54,6 +65,33 @@ abstract class Uri {
             return this
         }
 
+        fun appendEncodedPath(newSegment: String): Builder {
+            return appendPath(newSegment)
+        }
+
+        fun encodedPath(path: String?): Builder {
+            this.path = path
+            return this
+        }
+
+        fun query(query: String?): Builder {
+            if (!query.isNullOrEmpty()) {
+                queryParams.clear()
+                query.split("&").forEach { param ->
+                    val parts = param.split("=", limit = 2)
+                    if (parts.size == 2) {
+                        queryParams.add(parts[0] to parts[1])
+                    } else if (parts.size == 1) {
+                        queryParams.add(parts[0] to "")
+                    }
+                }
+            }
+            return this
+        }
+
+        fun encodedQuery(query: String?): Builder = query(query?.let { URLDecoder.decode(it, "UTF-8") })
+        fun encodedFragment(fragment: String?): Builder = fragment(fragment?.let { URLDecoder.decode(it, "UTF-8") })
+
         fun build(): Uri {
             val q = if (queryParams.isNotEmpty()) {
                 queryParams.joinToString("&") { 
@@ -85,9 +123,23 @@ abstract class Uri {
     }
 
     companion object {
+        @JvmField
+        val EMPTY: Uri = StringUri("")
+
         @JvmStatic
         fun parse(uriString: String): Uri {
             return StringUri(uriString)
+        }
+
+        @JvmStatic
+        fun fromParts(scheme: String, ssp: String, fragment: String?): Uri {
+            val uri = URI(scheme, ssp, fragment)
+            return StringUri(uri.toString())
+        }
+
+        @JvmStatic
+        fun fromFile(file: java.io.File): Uri {
+            return StringUri(file.toURI().toString())
         }
     }
 }
@@ -100,6 +152,16 @@ class StringUri(private val uriString: String) : Uri() {
     override val path: String? get() = parsed?.path
     override val query: String? get() = parsed?.query
     override val scheme: String? get() = parsed?.scheme
+
+    override val lastPathSegment: String? get() = pathSegments.lastOrNull()
+    override val pathSegments: List<String> get() = parsed?.path?.split("/")?.filter { it.isNotEmpty() } ?: emptyList()
+    override val encodedQuery: String? get() = parsed?.rawQuery
+    override val schemeSpecificPart: String? get() = parsed?.schemeSpecificPart
+    override val encodedSchemeSpecificPart: String? get() = parsed?.rawSchemeSpecificPart
+    override val authority: String? get() = parsed?.authority
+    override val encodedAuthority: String? get() = parsed?.rawAuthority
+    override val fragment: String? get() = parsed?.fragment
+    override val encodedFragment: String? get() = parsed?.rawFragment
 
     override fun getQueryParameter(key: String): String? {
         val q = parsed?.query ?: return null
@@ -115,6 +177,15 @@ class StringUri(private val uriString: String) : Uri() {
             .map { it.split("=", limit = 2) }
             .filter { it.size == 2 && URLDecoder.decode(it[0], "UTF-8") == key }
             .map { URLDecoder.decode(it[1], "UTF-8") }
+    }
+
+    override fun getQueryParameterNames(): Set<String> {
+        val q = parsed?.query ?: return emptySet()
+        return q.split("&")
+            .map { it.split("=", limit = 2) }
+            .filter { it.isNotEmpty() }
+            .map { URLDecoder.decode(it[0], "UTF-8") }
+            .toSet()
     }
 
     override fun buildUpon(): Builder {

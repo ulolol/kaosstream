@@ -21,42 +21,49 @@ function body(req) {
   });
 }
 
-function isChallengeText(text) {
-  return /(verify you are human|checking your browser|just a moment|cf-chl-|challenge-platform)/i.test(text || '');
+function isChallengeText(text, title) {
+  const combined = (text || '') + ' ' + (title || '');
+  return /(verify you are human|checking your browser|just a moment|cf-chl-|challenge-platform|attention required)/i.test(combined);
 }
 
 async function inspect(session) {
-  const text = await session.page.locator('body').innerText().catch(() => '');
-  session.challenge = isChallengeText(text);
+  const title = await session.page.title().catch(() => '') || '';
+  const text = await session.page.locator('body').innerText().catch(() => '') || '';
+  
+  // If the page is still in transition / completely empty, keep it pending
+  if (!text && !title) {
+    session.challenge = true;
+    session.status = 'pending';
+    session.url = session.page.url();
+    session.title = 'Loading...';
+    return;
+  }
+  
+  session.challenge = isChallengeText(text, title);
   session.status = session.challenge ? 'pending' : 'ready';
   session.url = session.page.url();
-  session.title = await session.page.title().catch(() => '');
-}
+  session.title = title;
 
-async function trySolveTurnstile(page) {
-  try {
-    const frames = page.frames();
-    for (const frame of frames) {
-      if (frame.url().includes('challenges.cloudflare.com')) {
-        // Try clicking the frame element itself
-        const frameElement = await frame.frameElement().catch(() => null);
-        if (frameElement && await frameElement.isVisible()) {
-          console.log('[Turnstile] Clicking Turnstile iframe center...');
-          await frameElement.click({ force: true, timeout: 2000 }).catch(() => {});
+  // Auto self-cleanup on completion
+  if (session.status === 'ready' && !session.cleanupStarted) {
+    session.cleanupStarted = true;
+    setTimeout(async () => {
+      try {
+        console.log(`[Session] Cleaning up completed session: ${session.id}`);
+        sessions.delete(session.id);
+        await session.context.close().catch(() => {});
+        const fs = require('fs');
+        if (session.profileDir) {
+          fs.rmSync(session.profileDir, { recursive: true, force: true });
         }
-        
-        // Also try clicking inside the frame if checkbox is resolved
-        const checkbox = await frame.$('input[type="checkbox"], #challenge-stage, .cb-i').catch(() => null);
-        if (checkbox && await checkbox.isVisible()) {
-          console.log('[Turnstile] Clicking checkbox inside Turnstile iframe...');
-          await checkbox.click({ force: true, timeout: 2000 }).catch(() => {});
-        }
+      } catch (err) {
+        console.error(`[Session] Error during cleanup of ${session.id}:`, err);
       }
-    }
-  } catch (error) {
-    // Ignore error
+    }, 60000); // Clean up after 1 minute
   }
 }
+
+
 
 async function start(data) {
   console.log(`Starting session for URL: ${data.url}`);
@@ -67,7 +74,17 @@ async function start(data) {
   }
   
   const defaultUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-  const context = await browser.newContext({
+  const profileDir = `/tmp/playwright-profile-${crypto.randomBytes(8).toString('hex')}`;
+  
+  console.log(`[Browser] Launching persistent headful context: ${profileDir}`);
+  const context = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    ignoreDefaultArgs: ['--enable-automation'],
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-blink-features=AutomationControlled'
+    ],
     userAgent: data.userAgent || defaultUA,
     viewport: { width: 1280, height: 1024 },
     deviceScaleFactor: 1,
@@ -75,18 +92,27 @@ async function start(data) {
     isMobile: false
   });
   
-  // Hide webdriver
+  // Hide webdriver and mimic standard browser attributes
   await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', {
-      get: () => undefined
-    });
+    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+    
+    // Override permissions query
+    const originalQuery = window.navigator.permissions.query;
+    window.navigator.permissions.query = (parameters) => (
+      parameters.name === 'notifications' ?
+        Promise.resolve({ state: Notification.permission }) :
+        originalQuery(parameters)
+    );
   });
 
-  const page = await context.newPage();
+  const page = context.pages()[0] || await context.newPage();
   const session = {
     id: crypto.randomBytes(18).toString('base64url'),
     context,
     page,
+    profileDir,
     status: 'pending',
     challenge: true,
     url: target.href,
@@ -96,15 +122,22 @@ async function start(data) {
   
   sessions.set(session.id, session);
   
-  // Periodic background solver for Cloudflare Turnstile
-  const solveInterval = setInterval(async () => {
-    const activeSession = sessions.get(session.id);
-    if (!activeSession || activeSession.status === 'ready' || activeSession.status === 'error') {
-      clearInterval(solveInterval);
-      return;
+  // Fail-safe: Unconditionally clean up the session after 5 minutes to prevent leaks
+  setTimeout(async () => {
+    try {
+      if (sessions.has(session.id)) {
+        console.log(`[Session] Expiring session due to 5-minute timeout: ${session.id}`);
+        sessions.delete(session.id);
+        await session.context.close().catch(() => {});
+        const fs = require('fs');
+        if (session.profileDir) {
+          fs.rmSync(session.profileDir, { recursive: true, force: true });
+        }
+      }
+    } catch (err) {
+      console.error(`[Session] Error during timeout cleanup of ${session.id}:`, err);
     }
-    await trySolveTurnstile(page);
-  }, 2500);
+  }, 300000);
 
   // Navigate to page
   await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
@@ -169,14 +202,5 @@ async function main(req, res) {
   }
 }
 
-(async () => {
-  browser = await chromium.launch({
-    headless: false,
-    args: [
-      '--no-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled'
-    ]
-  });
-  http.createServer(main).listen(port, '0.0.0.0', () => console.log(`challenge browser listening on ${port}`));
-})();
+// Start HTTP server immediately and launch browser on-demand to avoid Xvfb startup race conditions.
+http.createServer(main).listen(port, '0.0.0.0', () => console.log(`challenge browser listening on ${port}`));

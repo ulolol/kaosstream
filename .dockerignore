@@ -1,0 +1,9 @@
+.git
+.gradle
+**/.gradle
+**/build
+server/src/main/resources/web
+server/web/node_modules
+server/web/.vite
+.playwright-mcp
+cloudstream.tar

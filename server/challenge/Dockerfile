@@ -4,4 +4,4 @@ COPY package.json .
 RUN npm install --omit=dev
 COPY server.js .
 EXPOSE 3210
-CMD ["xvfb-run", "--server-args=-screen 0 1280x1024x24 -ac", "node", "server.js"]
+CMD Xvfb :99 -screen 0 1280x1024x24 -ac +extension GLX +render -noreset & sleep 3 && DISPLAY=:99 node server.js
