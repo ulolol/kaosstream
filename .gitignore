@@ -228,3 +228,4 @@ fabric.properties
 # End of https://www.toptal.com/developers/gitignore/api/kotlin,java,android,androidstudio,visualstudiocode
 cloudstream.tar
 .playwright-mcp/
+server/web/node_modules/
