@@ -203,3 +203,18 @@
   - Created [Base64.kt](file:///home/kaos/Documents/cloudstream/server/src/main/kotlin/android/util/Base64.kt) stub delegate using standard Java `java.util.Base64`.
   - Created [Stubs.kt](file:///home/kaos/Documents/cloudstream/server/src/main/kotlin/android/os/Stubs.kt) defining stubs for `Build`, `Bundle`, `Parcelable`, and `Parcel`.
   - Rsynced to `g3nas`, rebuilt containers, and verified that `MovieBox` search and homepage fallbacks execute cleanly and return correct results.
+
+### 22. Client-Side WASM MP4 Muxer and Demuxer Loop Refactoring for Safari / iPadOS
+- **Problem**: Playing MKV/HEVC files on iPadOS/Safari failed during WASM initialization with the error: `Failed to setup MSE demuxer: Failed to allocate output context.`
+- **Cause**: 
+  - The player previously loaded `@libav.js/variant-default`, which only bundles simple audio codecs and completely lacks video/MP4 container muxing capabilities.
+  - The `libav.ff_init_muxer` invocation passed a dummy `streams` property inside the options block rather than supplying the required stream contexts (`[codecpar, time_base_num, time_base_den]`) as the second positional argument.
+  - The demuxing loop was using a made-up method `libav.ff_write_multi_packet` and calling `libav.av_read_frame(fmt_ctx)` without passing a packet reference pointer, which returned invalid structures.
+- **Solution**:
+  - Switched the client to load `@libav.js/variant-webcodecs` which bundles full MP4/Ogg/WebM demuxing and muxing support alongside H.264 and AAC parsers.
+  - Created a virtual writer device `output.mp4` and registered a global `libav.onwrite` hook to stream fragmented MP4 chunks directly into the player's `SourceBuffer`.
+  - Refactored `initiateWasmPlayback` to allocate a packet `libav.av_packet_alloc()` and run `libav.av_read_frame(fmt_ctx, pkt)`.
+  - Dynamically mapped the packet's stream index using `libav.AVPacket_stream_index_s` to the output muxer's indices, and wrote packets using `libav.av_interleaved_write_frame(out_fmt_ctx, pkt)`.
+  - Configured `movflags` with `fragmented+empty_moov+default_base_moof+frag_keyframe` via `libav.av_opt_set` to support streaming chunks.
+  - Added a robust update end queue (`writeQueue`) to prevent `SourceBuffer` append failures during active updates.
+  - Integrated proper packet deallocation (`libav.av_packet_unref` and `libav.av_packet_free`) to prevent client-side memory leaks.

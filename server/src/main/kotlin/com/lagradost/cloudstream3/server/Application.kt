@@ -49,6 +49,9 @@ private data class ProbeStream(val codec_type: String, val codec_name: String? =
 private data class ProbeResult(val streams: List<ProbeStream>? = null)
 
 @Serializable
+data class ClientLogRequest(val level: String, val tag: String, val message: String)
+
+@Serializable
 data class SearchResponseDto(
     val name: String,
     val url: String,
@@ -759,6 +762,8 @@ fun Application.module() {
         get("/api/v1/proxy") {
             val targetUrl = call.request.queryParameters["url"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing parameter 'url'")
             val referer = call.request.queryParameters["referer"]
+            val range = call.request.headers["Range"]
+            Log.i("Proxy", "Range request: url=${targetUrl.take(80)}..., referer=$referer, range=$range")
             
             val url = URL(targetUrl)
             val connection = url.openConnection() as HttpURLConnection
@@ -767,7 +772,6 @@ fun Application.module() {
             connection.readTimeout = 60_000
             
             // Forward HTTP Range request header if client requested bytes range
-            val range = call.request.headers["Range"]
             if (range != null) {
                 connection.setRequestProperty("Range", range)
             }
@@ -807,6 +811,7 @@ fun Application.module() {
             call.response.headers.append("Content-Type", contentType)
             call.response.headers.append("Access-Control-Allow-Origin", "*")
             call.response.headers.append("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            call.response.headers.append("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges, Content-Type")
             call.response.headers.append("Accept-Ranges", "bytes")
             call.response.headers.append("Cross-Origin-Resource-Policy", "cross-origin")
             
@@ -862,6 +867,7 @@ fun Application.module() {
         // --- 6.1. Smart Backend Transcoding/Remuxing Route ---
         get("/api/v1/transcode") {
             val requestedUrl = call.request.queryParameters["url"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing url")
+            Log.i("Transcode", "Received request: url=${requestedUrl.take(80)}...")
             val url = if (requestedUrl.startsWith("/")) {
                 "http://127.0.0.1:${System.getenv("CS_PORT")?.toIntOrNull() ?: 2106}$requestedUrl"
             } else {
@@ -899,6 +905,9 @@ fun Application.module() {
                 Log.w("Transcode", "Failed to probe stream, defaulting to full transcode: ${e.message}")
             }
 
+            Log.i("Transcode", "Probed codecs - Video: $videoCodec, Audio: $audioCodec")
+            Log.i("Transcode", "Client support - Videos: $supportedVideos, Audios: $supportedAudios")
+
             // Determine if transcoding is required by matching ffprobe codec against client list
             val browserSupportsVideo = videoCodec != null && supportedVideos.contains(videoCodec)
             val browserSupportsAudio = audioCodec != null && supportedAudios.contains(audioCodec)
@@ -909,10 +918,15 @@ fun Application.module() {
             val transcodeVideo = !browserSupportsVideo
             val transcodeAudio = !browserSupportsAudio
 
+            Log.i("Transcode", "Decided pathway - Transcode Video: $transcodeVideo, Transcode Audio: $transcodeAudio")
+
             if (transcodeVideo) {
                 val hasVaapi = java.io.File("/dev/dri/renderD128").exists()
                 if (hasVaapi) {
+                    Log.i("Transcode", "VAAPI Hardware Acceleration is AVAILABLE. Enabling VAAPI.")
                     command.addAll(listOf("-hwaccel", "vaapi", "-hwaccel_device", "/dev/dri/renderD128", "-hwaccel_output_format", "vaapi"))
+                } else {
+                    Log.i("Transcode", "VAAPI Hardware Acceleration is UNAVAILABLE. Using software encoding.")
                 }
             }
 
@@ -943,6 +957,7 @@ fun Application.module() {
                 "pipe:1"
             ))
 
+            Log.i("Transcode", "Executing FFmpeg: ${command.joinToString(" ")}")
             val process = ProcessBuilder(command).start()
 
             call.response.header("Content-Type", "video/mp4")
@@ -1122,6 +1137,20 @@ fun Application.module() {
                 Log.e("Plugins", "Error installing plugin: ${e.message}")
                 call.respond(HttpStatusCode.InternalServerError, "Failed to load uploaded plugin: ${e.message}")
             }
+        }
+
+        post("/api/v1/log") {
+            try {
+                val req = call.receive<ClientLogRequest>()
+                if (req.level.uppercase() == "WARN" || req.level.uppercase() == "ERROR") {
+                    Log.e(req.tag, "[Client] ${req.message}")
+                } else {
+                    Log.i(req.tag, "[Client] ${req.message}")
+                }
+            } catch (e: Exception) {
+                // Ignore malformed logs
+            }
+            call.respond(HttpStatusCode.OK)
         }
 
         // Serve frontend static assets from resources

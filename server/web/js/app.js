@@ -1098,7 +1098,7 @@ function renderPlayer() {
     container: selectedSource?.type?.toLowerCase?.().includes('m3u8') ? 'mp4' : undefined
   });
   route.referer = selectedSource?.referer || '';
-  console.log(`[Player Route Solver] Selected method: ${route.method}. Reason: ${route.reasons.join(' | ')}`);
+  serverLog("INFO", "PlayerRoute", `Selected method: ${route.method}. Reason: ${route.reasons.join(' | ')}. URL: ${streamUrl}`);
 
   if (route.method === 'DIRECT') {
     const canPlayNatively = video.canPlayType('application/vnd.apple.mpegurl') !== '' || 
@@ -1525,6 +1525,16 @@ async function renderPlugins() {
   }
 }
 
+// Helper to send logs to the server
+function serverLog(level, tag, message) {
+  console.log(`[${tag}] ${message}`);
+  fetch(`${API_BASE}/log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ level, tag, message })
+  }).catch(() => {});
+}
+
 // Dynamic script injection helper
 function loadScript(url) {
   return new Promise((resolve, reject) => {
@@ -1546,8 +1556,8 @@ let subtitlesOctopusInitialized = false;
 async function ensureLibav() {
   if (libavInitialized) return;
   showToast("Loading client-side WASM Demuxer...");
-  // Using official variant-default package from jsDelivr
-  await loadScript("https://cdn.jsdelivr.net/npm/@libav.js/variant-default@6.9.8/dist/libav-default.js");
+  // Using official variant-webcodecs package from jsDelivr for full container and muxer support
+  await loadScript("https://cdn.jsdelivr.net/npm/@libav.js/variant-webcodecs@6.9.8/dist/libav-webcodecs.js");
   libavInitialized = true;
   showToast("WASM Demuxer loaded successfully.");
 }
@@ -1588,75 +1598,230 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
     await ensureLibav();
 
     // Setup MediaSource if remuxing
+    // Setup MediaSource if remuxing
     if (route.method === 'REMUX_COPY' || route.method === 'REMUX_TRANSCODE') {
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                       /iPad|iPhone|iPod/.test(navigator.platform) ||
+                       (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      
+      const libavOpts = {};
+      if (isSafari || typeof window.SharedArrayBuffer === 'undefined') {
+        libavOpts.noworker = true;
+      }
+
+      const factory = window.LibAV || window.Libav;
+      const libav = await factory.LibAV(libavOpts);
+      showToast(`Initializing remuxer for ${route.container.toUpperCase()} container...`);
+
+      // Helper to get total size of remote media file (via HEAD or bytes=0-0 GET via proxy)
+      async function getFileSize(url) {
+        const proxyUrl = `${API_BASE}/proxy?url=${encodeURIComponent(url)}&referer=${encodeURIComponent(route?.referer || '')}`;
+        try {
+          const res = await fetch(proxyUrl, { method: 'HEAD' });
+          if (res.ok) {
+            const len = res.headers.get('Content-Length');
+            if (len) {
+              const size = parseInt(len, 10);
+              serverLog("INFO", "WasmInit", `File size resolved via Proxy HEAD: ${size} bytes`);
+              return size;
+            }
+          }
+        } catch (err) {
+          console.warn("Proxy HEAD request failed, trying range GET", err);
+        }
+        try {
+          const res = await fetch(proxyUrl, { headers: { 'Range': 'bytes=0-0' } });
+          if (res.status === 206 || res.ok) {
+            const contentRange = res.headers.get('Content-Range');
+            if (contentRange) {
+              const parts = contentRange.split('/');
+              if (parts.length > 1) {
+                const size = parseInt(parts[1], 10);
+                if (!isNaN(size)) {
+                  serverLog("INFO", "WasmInit", `File size resolved via Proxy Content-Range: ${size} bytes`);
+                  return size;
+                }
+              }
+            }
+            const len = res.headers.get('Content-Length');
+            if (len) {
+              const size = parseInt(len, 10);
+              serverLog("INFO", "WasmInit", `File size resolved via Proxy Content-Length: ${size} bytes`);
+              return size;
+            }
+          }
+        } catch (err) {
+          console.error("Failed to get file size via proxy", err);
+        }
+        serverLog("WARN", "WasmInit", "Failed to resolve file size via proxy, using 1GB fallback");
+        return 1024 * 1024 * 1024; // 1GB fallback
+      }
+
+      const fileName = 'input.' + route.container;
+      const size = await getFileSize(streamUrl);
+      await libav.mkblockreaderdev(fileName, size);
+
+      libav.onblockread = async (name, position, length) => {
+        try {
+          const res = await fetch(streamUrl, { headers: { 'Range': `bytes=${position}-${position + length - 1}` } });
+          const buf = await res.arrayBuffer();
+          await libav.ff_block_reader_dev_send(name, position, new Uint8Array(buf));
+        } catch (err) {
+          console.error("[onblockread error]", err);
+          await libav.ff_block_reader_dev_send(name, position, new Uint8Array(0));
+        }
+      };
+
+      // Load container headers and analyze streams
+      const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(fileName);
+
+      // Find audio and video tracks
+      const videoStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_VIDEO);
+      const audioStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO);
+
+       const vCodecName = videoStream ? await libav.avcodec_get_name(videoStream.codec_id) : 'none';
+       const aCodecName = audioStream ? await libav.avcodec_get_name(audioStream.codec_id) : 'none';
+       serverLog("INFO", "WasmInit", `Parsed streams - Video codec: ${vCodecName}, Audio codec: ${aCodecName}`);
+
+       // The browser MSE output is fragmented MP4 with packet-copy only.
+       // AC3/DTS/HEVC and similar streams must use the server FFmpeg path;
+       // attempting to append them here produces an InvalidStateError.
+       const copyCompatible = (!videoStream || ['h264', 'avc1'].includes(String(vCodecName).toLowerCase())) &&
+         (!audioStream || String(aCodecName).toLowerCase() === 'aac');
+       if (!copyCompatible) {
+         serverLog("INFO", "WasmInit", `Unsupported copy-remux stream ${vCodecName}/${aCodecName}; falling back to server transcode`);
+         fallbackToBackendTranscode(videoElement, streamUrl, route, source);
+         return;
+       }
+
+       // Build media source and set source src
       const mediaSource = new MediaSource();
       videoElement.src = URL.createObjectURL(mediaSource);
+      videoElement.load(); // Reset player error state and initiate loading
 
       mediaSource.addEventListener('sourceopen', async () => {
         try {
-          // Initialize libav instance
-          const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
-                           /iPad|iPhone|iPod/.test(navigator.platform) ||
-                           (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-          
-          const libavOpts = {};
-          if (isSafari || typeof window.SharedArrayBuffer === 'undefined') {
-            libavOpts.noworker = true;
+          // Build MSE SourceBuffer using dynamic capabilities detection synchronously first
+          let codecs = [];
+          if (videoStream) {
+            if (videoStream.codec_id === libav.AV_CODEC_ID_HEVC) {
+              codecs.push('hvc1');
+            } else {
+              codecs.push('avc1.640028');
+            }
           }
-
-          const factory = window.LibAV || window.Libav;
-          const libav = await factory.LibAV(libavOpts);
-          showToast(`Initializing remuxer for ${route.container.toUpperCase()} container...`);
-
-          // Mount the URL locally inside libav virtual filesystem
-          await libav.mount_url('/input.' + route.container, streamUrl);
-          const [fmt_ctx, streams] = await libav.ff_init_demuxer('input.' + route.container);
-
-          // Find audio and video tracks
-          const videoStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_VIDEO);
-          const audioStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO);
-
-          // Build MSE SourceBuffer (using standard H.264/AAC profile)
-          const mimeType = 'video/mp4; codecs="avc1.640028, mp4a.40.2"';
+          if (audioStream) {
+            if (audioStream.codec_id === libav.AV_CODEC_ID_AAC) {
+              codecs.push('mp4a.40.2');
+            } else if (audioStream.codec_id === libav.AV_CODEC_ID_AC3) {
+              codecs.push('ac-3');
+            } else if (audioStream.codec_id === libav.AV_CODEC_ID_EAC3) {
+              codecs.push('ec-3');
+            } else {
+              codecs.push('mp4a.40.2');
+            }
+          }
+          const mimeType = `video/mp4; codecs="${codecs.join(', ')}"`;
           const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
 
-          // Configure output muxer
-          const [out_fmt_ctx, out_streams] = await libav.ff_init_muxer({
-            format_name: 'mp4',
-            flags: 'fragmented+empty_moov+default_base_moof',
-            streams: [
-              { codec_type: libav.AVMEDIA_TYPE_VIDEO, codec_id: videoStream ? videoStream.codec_id : libav.AV_CODEC_ID_H264 },
-              { codec_type: libav.AVMEDIA_TYPE_AUDIO, codec_id: libav.AV_CODEC_ID_AAC }
-            ]
+          // Initialize writer device for capture (async)
+          await libav.mkwriterdev('output.mp4');
+
+          // MSE update end queue management
+          const writeQueue = [];
+          function appendToSourceBuffer(buffer) {
+            if (sourceBuffer.updating) {
+              writeQueue.push(buffer);
+            } else {
+              sourceBuffer.appendBuffer(buffer);
+            }
+          }
+
+          sourceBuffer.addEventListener('updateend', () => {
+            if (writeQueue.length > 0 && !sourceBuffer.updating) {
+              const nextBuf = writeQueue.shift();
+              sourceBuffer.appendBuffer(nextBuf);
+            }
           });
+
+          // Intercept output chunks and push to MSE
+          libav.onwrite = (name, position, buffer) => {
+            if (name === 'output.mp4') {
+              appendToSourceBuffer(new Uint8Array(buffer));
+            }
+          };
+
+          const videoTb = videoStream ? (videoStream.time_base || [1, 90000]) : [1, 90000];
+          const audioTb = audioStream ? (audioStream.time_base || [1, 48000]) : [1, 48000];
+          
+          const videoTbNum = Array.isArray(videoTb) ? videoTb[0] : (videoTb.num || 1);
+          const videoTbDen = Array.isArray(videoTb) ? videoTb[1] : (videoTb.den || 90000);
+          const audioTbNum = Array.isArray(audioTb) ? audioTb[0] : (audioTb.num || 1);
+          const audioTbDen = Array.isArray(audioTb) ? audioTb[1] : (audioTb.den || 48000);
+
+          let videoStreamIndexInMuxer = -1;
+          let audioStreamIndexInMuxer = -1;
+          const muxerStreams = [];
+
+          if (videoStream) {
+            videoStreamIndexInMuxer = muxerStreams.length;
+            muxerStreams.push([videoStream.codecpar, videoTbNum, videoTbDen]);
+          }
+          if (audioStream) {
+            audioStreamIndexInMuxer = muxerStreams.length;
+            muxerStreams.push([audioStream.codecpar, audioTbNum, audioTbDen]);
+          }
+
+          // Configure output muxer with codec parameters directly (no transcoder contexts)
+          const [out_fmt_ctx, , , out_streams] = await libav.ff_init_muxer({
+            format_name: 'mp4',
+            filename: 'output.mp4',
+            open: true,
+            codecpars: true
+          }, muxerStreams);
+
+          // Configure movflags for fragmented MP4 streaming via options dictionary
+          await libav.av_opt_set(out_fmt_ctx, "movflags", "fragmented+empty_moov+default_base_moof+frag_keyframe", 0);
+
+          // Write fragmented MP4 format header
+          await libav.avformat_write_header(out_fmt_ctx, 0);
 
           // Demux loop
           let active = true;
+          const pkt = await libav.av_packet_alloc();
 
           videoElement.addEventListener('emptied', () => { active = false; });
 
           async function demuxLoop() {
-            if (!active) return;
+            if (!active) {
+              await libav.av_packet_free(pkt);
+              return;
+            }
             try {
-              const packet = await libav.av_read_frame(fmt_ctx);
-              if (packet) {
-                if (videoStream && packet.stream_index === videoStream.index) {
-                  const fmp4Chunk = await libav.ff_write_multi_packet(out_fmt_ctx, out_streams[0], packet);
-                  if (fmp4Chunk && fmp4Chunk.length > 0 && !sourceBuffer.updating) {
-                    sourceBuffer.appendBuffer(fmp4Chunk);
-                  }
-                } else if (audioStream && packet.stream_index === audioStream.index) {
-                  // If transcoding audio (e.g. DTS to AAC) or copying natively
-                  const fmp4Chunk = await libav.ff_write_multi_packet(out_fmt_ctx, out_streams[1], packet);
-                  if (fmp4Chunk && fmp4Chunk.length > 0 && !sourceBuffer.updating) {
-                    sourceBuffer.appendBuffer(fmp4Chunk);
-                  }
+              const ret = await libav.av_read_frame(fmt_ctx, pkt);
+              if (ret >= 0) {
+                const streamIndex = await libav.AVPacket_stream_index(pkt);
+                if (videoStream && streamIndex === videoStream.index) {
+                  await libav.AVPacket_stream_index_s(pkt, videoStreamIndexInMuxer);
+                  await libav.av_interleaved_write_frame(out_fmt_ctx, pkt);
+                } else if (audioStream && streamIndex === audioStream.index) {
+                  await libav.AVPacket_stream_index_s(pkt, audioStreamIndexInMuxer);
+                  await libav.av_interleaved_write_frame(out_fmt_ctx, pkt);
                 }
+                await libav.av_packet_unref(pkt);
                 // Throttled schedule
                 setTimeout(demuxLoop, 5);
+              } else {
+                // EOF or demux error - flush trailer and cleanup
+                await libav.av_write_trailer(out_fmt_ctx);
+                serverLog("INFO", "WasmDemux", `Reached EOF or read error (code ${ret}), trailer written`);
+                await libav.av_packet_free(pkt);
               }
             } catch (err) {
               console.error("[WASM Demux Error]", err);
+              serverLog("ERROR", "WasmDemux", `Demux loop error: ${err.message || err}`);
+              await libav.av_packet_free(pkt);
+              fallbackToBackendTranscode(videoElement, streamUrl, route, source);
             }
           }
 
@@ -1664,6 +1829,8 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
         } catch (err) {
           console.error("Failed to setup MSE demuxer:", err);
           showToast("Failed to initialize WASM demuxer: " + err.message);
+          serverLog("ERROR", "WasmInit", `Failed to setup MSE demuxer: ${err.message || err}. Stack: ${err.stack || ''}`);
+          fallbackToBackendTranscode(videoElement, streamUrl, route, source);
         }
       });
     } else if (route.method === 'SOFT_DECODE') {
@@ -1688,6 +1855,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
   } catch (err) {
     console.error("[WASM Playback Init Error]", err);
     showToast("WASM Playback Failed. Falling back to backend server transcode...");
+    serverLog("ERROR", "WasmInit", `WASM Playback Init Error: ${err.message || err}. Stack: ${err.stack || ''}`);
     
     // Obtain browser capability lists dynamically
     fallbackToBackendTranscode(videoElement, streamUrl, route, source);

@@ -8,6 +8,28 @@ export function checkBrowserCapabilities() {
   const hasMSE = 'MediaSource' in window;
   const hasWebCodecs = 'VideoDecoder' in window && 'AudioDecoder' in window;
 
+  const supportsVideo = (mime, codec) => {
+    if (hasMSE) {
+      try {
+        return MediaSource.isTypeSupported(`${mime}; codecs="${codec}"`);
+      } catch (e) {
+        return false;
+      }
+    }
+    return video.canPlayType(`${mime}; codecs="${codec}"`) !== '';
+  };
+
+  const supportsAudio = (mime, codec) => {
+    if (hasMSE) {
+      try {
+        return MediaSource.isTypeSupported(`${mime}; codecs="${codec}"`);
+      } catch (e) {
+        return false;
+      }
+    }
+    return video.canPlayType(`${mime}; codecs="${codec}"`) !== '';
+  };
+
   const capabilities = {
     // Platform Engines
     mse: hasMSE,
@@ -25,29 +47,23 @@ export function checkBrowserCapabilities() {
 
     // Video Codecs
     videoCodecs: {
-      h264: video.canPlayType('video/mp4; codecs="avc1.42E01E"') !== '',
-      h265: video.canPlayType('video/mp4; codecs="hvc1.1.6.L120.90"') !== '' || 
-            video.canPlayType('video/mp4; codecs="hev1.1.6.L120.90"') !== '',
-      av1: video.canPlayType('video/mp4; codecs="av01.0.08M.08"') !== '' ||
-           video.canPlayType('video/webm; codecs="av01.0.08M.08"') !== '',
-      vp9: video.canPlayType('video/webm; codecs="vp9"') !== '' ||
-           video.canPlayType('video/mp4; codecs="vp09.00.10.08"') !== '',
-      vp8: video.canPlayType('video/webm; codecs="vp8"') !== '',
-      mpeg4: video.canPlayType('video/mp4; codecs="mp4v.20.8"') !== '',
+      h264: supportsVideo('video/mp4', 'avc1.42E01E'),
+      h265: supportsVideo('video/mp4', 'hvc1.1.6.L120.90') || supportsVideo('video/mp4', 'hev1.1.6.L120.90'),
+      av1: supportsVideo('video/mp4', 'av01.0.08M.08') || supportsVideo('video/webm', 'av01.0.08M.08'),
+      vp9: supportsVideo('video/webm', 'vp9') || supportsVideo('video/mp4', 'vp09.00.10.08'),
+      vp8: supportsVideo('video/webm', 'vp8'),
+      mpeg4: supportsVideo('video/mp4', 'mp4v.20.8'),
     },
 
     // Audio Codecs
     audioCodecs: {
-      aac: video.canPlayType('audio/mp4; codecs="mp4a.40.2"') !== '',
-      mp3: video.canPlayType('audio/mpeg') !== '',
-      opus: video.canPlayType('audio/webm; codecs="opus"') !== '' || 
-            video.canPlayType('audio/mp4; codecs="opus"') !== '',
-      flac: video.canPlayType('audio/mp4; codecs="flac"') !== '' || 
-            video.canPlayType('audio/flac') !== '',
-      ac3: video.canPlayType('audio/mp4; codecs="ac-3"') !== '',
-      ec3: video.canPlayType('audio/mp4; codecs="ec-3"') !== '',
-      dts: video.canPlayType('audio/mp4; codecs="dts"') !== '' ||
-           video.canPlayType('audio/mp4; codecs="dtsc"') !== '',
+      aac: supportsAudio('audio/mp4', 'mp4a.40.2'),
+      mp3: hasMSE ? MediaSource.isTypeSupported('audio/mpeg') || MediaSource.isTypeSupported('audio/mp4; codecs="mp4a.40.34"') : video.canPlayType('audio/mpeg') !== '',
+      opus: supportsAudio('audio/webm', 'opus') || supportsAudio('audio/mp4', 'opus'),
+      flac: supportsAudio('audio/mp4', 'flac') || (hasMSE ? MediaSource.isTypeSupported('audio/flac') : video.canPlayType('audio/flac') !== ''),
+      ac3: supportsAudio('audio/mp4', 'ac-3'),
+      ec3: supportsAudio('audio/mp4', 'ec-3'),
+      dts: supportsAudio('audio/mp4', 'dts') || supportsAudio('audio/mp4', 'dtsc'),
     }
   };
 
