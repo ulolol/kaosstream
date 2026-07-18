@@ -1573,7 +1573,12 @@ async function ensureSubtitlesOctopus() {
 function getBackendTranscodeUrl(streamUrl, route, source) {
   const caps = checkBrowserCapabilities();
   const supportedVideos = Object.keys(caps.videoCodecs).filter(k => caps.videoCodecs[k]).join(',');
-  const supportedAudios = Object.keys(caps.audioCodecs).filter(k => caps.audioCodecs[k]).join(',');
+  // canPlayType() may report AC3/E-AC3 support for native playback, but
+  // those codecs are not safe in the fragmented-MP4/MSE fallback on iPad.
+  const safeAudioCodecs = new Set(['aac', 'mp3']);
+  const supportedAudios = Object.keys(caps.audioCodecs)
+    .filter(k => caps.audioCodecs[k] && safeAudioCodecs.has(k))
+    .join(',');
   const targetUrl = streamUrl.startsWith('/')
     ? streamUrl
     : new URL(streamUrl, window.location.origin).href;
