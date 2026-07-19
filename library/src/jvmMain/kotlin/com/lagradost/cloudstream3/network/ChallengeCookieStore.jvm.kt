@@ -34,20 +34,20 @@ object ChallengeCookieStore {
      * @param cookieHeader The full cookie header string (e.g. "cf_clearance=abc; ...")
      * @param userAgent The user agent to use for this host
      * @param host The hostname these cookies belong to (required for per-domain isolation)
+     * @param sourceUrl The original URL that triggered the challenge, used for proactive warmup
      */
     @Synchronized
-    fun apply(cookieHeader: String, userAgent: String? = null, host: String? = null) {
+    fun apply(cookieHeader: String, userAgent: String? = null, host: String? = null, sourceUrl: String? = null) {
         if (cookieHeader.isBlank()) return
 
         val resolvedHost = host?.takeIf { it.isNotBlank() }
             ?: run {
-                // Fallback: extract host from cookie or use a default
                 Log.w(TAG, "apply() called without host - cookies will be stored with fallback key")
                 "unknown"
             }
 
-        // Store per-domain
-        CookieJarManager.setCookies(resolvedHost, cookieHeader, userAgent, DEFAULT_TTL_MS)
+        // Store per-domain (sourceUrl enables proactive cookie warmup)
+        CookieJarManager.setCookies(resolvedHost, cookieHeader, userAgent, sourceUrl, DEFAULT_TTL_MS)
         appliedHosts.add(resolvedHost)
 
         // Also apply to AnimePahe plugin via reflection (plugin-specific ABI)

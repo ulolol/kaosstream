@@ -90,7 +90,7 @@ actual class WebViewResolver actual constructor(
                         if (name != null && value != null) "$name=$value" else null
                     }.joinToString("; ")
                     val host = URL(finalUrl).host
-                    ChallengeCookieStore.apply(cookies, extractUserAgent(status), host)
+                    ChallengeCookieStore.apply(cookies, extractUserAgent(status), host, finalUrl)
                     val resolved = request.newBuilder().url(finalUrl).apply {
                         if (cookies.isNotBlank()) addHeader("Cookie", cookies)
                         extractUserAgent(status)?.let { addHeader("User-Agent", it) }

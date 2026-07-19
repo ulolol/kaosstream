@@ -1380,12 +1380,58 @@ fun Application.module() {
                     ?.groupValues?.get(1)
                 val host = Regex("""\"url\":\"https?://([^/\"]+)""").find(responseJson)
                     ?.groupValues?.get(1)
-                ChallengeCookieStore.apply(cookieHeader, userAgent, host)
+                val sourceUrl = Regex("""\"url\":\"([^\"]+)""").find(responseJson)
+                    ?.groupValues?.get(1)
+                // Store per-domain with source URL for proactive warmup
+                CookieJarManager.setCookies(
+                    host = host ?: "unknown",
+                    cookieHeader = cookieHeader,
+                    userAgent = userAgent,
+                    sourceUrl = sourceUrl,
+                )
             }
             call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
         }
 
         // --- 8.9 Cookie jar management ---
+        /**
+         * POST /api/v1/cookies - Share cookies from client (e.g., Android app).
+         *
+         * Allows the Android app to push cookies it solved locally (via WebView)
+         * to the server. This avoids redundant challenge solving when the app
+         * has already solved a Cloudflare challenge for a domain.
+         *
+         * Request body:
+         * {
+         *   "host": "example.com",
+         *   "cookies": "cf_clearance=abc123; ...",
+         *   "userAgent": "Mozilla/5.0 ...",
+         *   "sourceUrl": "https://example.com/page"
+         * }
+         */
+        @Serializable
+        data class CookieShareRequest(
+            val host: String,
+            val cookies: String,
+            val userAgent: String? = null,
+            val sourceUrl: String? = null,
+        )
+
+        post("/api/v1/cookies") {
+            try {
+                val req = call.receive<CookieShareRequest>()
+                if (req.host.isBlank() || req.cookies.isBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, "host and cookies are required")
+                    return@post
+                }
+                CookieJarManager.setCookies(req.host, req.cookies, req.userAgent, req.sourceUrl)
+                Log.i("CookieShare", "Received cookies from client for ${req.host}")
+                call.respond(mapOf("success" to true, "message" to "Cookies stored for ${req.host}"))
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.BadRequest, "Invalid request: ${e.message}")
+            }
+        }
+
         get("/api/v1/cookies") {
             val hosts = CookieJarManager.getHosts().map { host ->
                 val entry = CookieJarManager.getEntry(host)
