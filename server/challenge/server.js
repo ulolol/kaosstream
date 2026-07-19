@@ -86,25 +86,58 @@ async function start(data) {
       '--disable-blink-features=AutomationControlled'
     ],
     userAgent: data.userAgent || defaultUA,
-    viewport: { width: 1280, height: 1024 },
+    viewport: { width: 1920, height: 1080 },
     deviceScaleFactor: 1,
     hasTouch: false,
     isMobile: false
   });
   
-  // Hide webdriver and mimic standard browser attributes
+  // Hide automation signals and mimic a real browser fingerprint
   await context.addInitScript(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+    Object.defineProperty(window, 'chrome', {
+      get: () => ({
+        runtime: { id: undefined, connect: () => {}, sendMessage: () => {}, onMessage: { addListener: () => {} } },
+        loadTimes: () => {},
+        csi: () => {},
+        app: { isInstalled: false }
+      })
+    });
+
     Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-    
-    // Override permissions query
-    const originalQuery = window.navigator.permissions.query;
-    window.navigator.permissions.query = (parameters) => (
-      parameters.name === 'notifications' ?
-        Promise.resolve({ state: Notification.permission }) :
-        originalQuery(parameters)
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+      ]
+    });
+
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+    const getParameterProxy = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(p) {
+      if (p === 37445) return 'Intel Inc.';
+      if (p === 37446) return 'Intel Iris OpenGL Engine';
+      return getParameterProxy.call(this, p);
+    };
+
+    const origQuery = navigator.permissions.query;
+    navigator.permissions.query = (params) => (
+      params.name === 'notifications'
+        ? Promise.resolve({ state: 'denied' })
+        : origQuery(params)
     );
+
+    Object.defineProperty(screen, 'orientation', {
+      get: () => ({ type: 'landscape-primary', angle: 0 })
+    });
+
+    Object.defineProperty(navigator, 'connection', {
+      get: () => ({ effectiveType: '4g', rtt: 50, downlink: 10 })
+    });
   });
 
   const page = context.pages()[0] || await context.newPage();
@@ -139,11 +172,12 @@ async function start(data) {
     }
   }, 300000);
 
-  // Navigate to page
+  // Navigate to page — use domcontentloaded so we don't hang on CF challenge polling
   await page.goto(target.href, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(err => {
     console.error(`Page navigation failed: ${err.message}`);
   });
-  
+
+  await page.waitForTimeout(1000 + Math.random() * 1000);
   await inspect(session);
   return publicSession(session);
 }
@@ -179,7 +213,7 @@ async function main(req, res) {
     if (req.method === 'POST' && parts[2] === 'click') {
       const action = await body(req);
       await session.page.mouse.click(Number(action.x), Number(action.y));
-      await session.page.waitForTimeout(500);
+      await session.page.waitForTimeout(1500);
       return json(res, 200, publicSession(session));
     }
     if (req.method === 'POST' && parts[2] === 'type') {
@@ -188,7 +222,9 @@ async function main(req, res) {
       return json(res, 200, publicSession(session));
     }
     if (req.method === 'POST' && parts[2] === 'complete') {
-      await session.page.waitForTimeout(1500);
+      await session.page.waitForTimeout(5000);
+      const currentUrl = session.page.url();
+      console.log(`[Session] Complete check for ${session.id}, url=${currentUrl}`);
       await inspect(session);
       return json(res, 200, publicSession(session));
     }

@@ -282,7 +282,10 @@ function showChallengeModal(sessionId) {
       
       if (data.status === 'ready') {
         clearInterval(timer);
+        // Auto-complete to trigger cookie storage and pending retry
+        await fetch(`${API_BASE}/challenges/${sessionId}/complete`, { method: 'POST' }).catch(() => {});
         showToast('Challenge solved successfully!');
+        window.dispatchEvent(new CustomEvent('challenge-completed', { detail: { sessionId, url: data.url } }));
         setTimeout(() => modal.remove(), 1500);
       }
     } catch (_) {
@@ -933,6 +936,13 @@ async function renderSearch() {
   searchBox.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') executeSearch();
   });
+
+  window.addEventListener('challenge-completed', (e) => {
+    const q = searchBox.value.trim();
+    if (q && document.getElementById('search-results')) {
+      executeSearch();
+    }
+  });
 }
 
 async function renderChallenge() {
@@ -962,6 +972,7 @@ async function renderChallenge() {
     empty.style.display = 'none';
     if (data.status === 'ready') {
       clearInterval(pollTimer);
+      await fetch(`${API_BASE}/challenges/${sessionId}/complete`, { method: 'POST' }).catch(() => {});
       showToast('Challenge completed. Retry the provider operation.');
     }
   };

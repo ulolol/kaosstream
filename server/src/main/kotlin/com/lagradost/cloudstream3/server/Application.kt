@@ -17,6 +17,9 @@ import com.lagradost.cloudstream3.server.challenge.ChallengeClient
 import com.lagradost.cloudstream3.network.ChallengeCookieStore
 import com.lagradost.cloudstream3.network.CloudflareKillerJvm
 import com.lagradost.cloudstream3.network.CookieJarManager
+import com.lagradost.cloudstream3.network.PendingRetryStore
+import com.lagradost.cloudstream3.network.RetryResultStore
+import kotlin.concurrent.thread
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -1390,8 +1393,38 @@ fun Application.module() {
                     userAgent = userAgent,
                     sourceUrl = sourceUrl,
                 )
+
+                // Fire pending retry asynchronously so the response to the frontend is not delayed
+                if (host != null) {
+                    val retryUrl = PendingRetryStore.retrieve(host)
+                    if (retryUrl != null) {
+                        thread(name = "challenge-retry-$id") {
+                            try {
+                                val retryResponse = com.lagradost.cloudstream3.app.baseClient.newCall(
+                                    okhttp3.Request.Builder().url(retryUrl).get().build()
+                                ).execute()
+                                val retryBody = retryResponse.body?.string() ?: ""
+                                val retryContentType = retryResponse.header("Content-Type") ?: "text/plain"
+                                RetryResultStore.store(id, retryResponse.code, retryBody, retryContentType)
+                                Log.i("ChallengeRetry", "Retry succeeded for $id ($host)")
+                            } catch (e: Exception) {
+                                Log.e("ChallengeRetry", "Retry failed for $id ($host): ${e.message}")
+                            }
+                        }
+                    }
+                }
             }
             call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        get("/api/v1/challenges/{id}/retry-result") {
+            val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing challenge id")
+            val result = RetryResultStore.retrieve(id)
+            if (result == null) {
+                call.respond(HttpStatusCode.NotFound, "No retry result available yet for challenge $id")
+                return@get
+            }
+            call.respondText(result.body, ContentType.Application.Json, HttpStatusCode.fromValue(result.status))
         }
 
         // --- 8.9 Cookie jar management ---

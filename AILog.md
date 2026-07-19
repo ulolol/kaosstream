@@ -227,3 +227,22 @@
   - Implemented `playTranscodeStreamViaMse` utilizing `MediaSource` and a fetch body stream reader to read and append the transcode stream chunks into a browser-supported `SourceBuffer` container (`video/mp4; codecs="avc1.640028, mp4a.40.2"`).
   - Modified `fallbackToBackendTranscode` to detect Safari/iPadOS using navigator userAgent/platform matching, automatically routing transcoding via the MSE chunk reader.
   - Rebuilt assets and verified the output `index.html` references the updated Vite bundle `main-BY51kmKV.js`.
+
+### 24. Codebase Indexing Status Check
+- Checked status of the `kaos-ast` codebase indexer.
+- Verified index is healthy and search is available: serving 509 files and 3499 chunks. Detected languages include: Kotlin (3247 chunks), JavaScript (104 chunks), CSS (36 chunks), Markdown (25 chunks), Batch (19 chunks), Bash (17 chunks), Python (11 chunks), HTML (6 chunks), and Prolog (1 chunk).
+
+### 25. Watch History Deletion, Asynchronous Search results, and Category Filtering
+- **Features Added**:
+  1. **History Deletion**: Added a trash icon delete button next to each entry in the History view. It triggers `removeHistoryItem(id)`, calls the backend `DELETE` API, and automatically refreshes the History or Home page.
+  2. **Asynchronous Search Results**: Modified the `/api/v1/search` Ktor endpoint to stream results provider by provider in chunked JSON Lines (using `call.respondTextWriter`). The client reads the stream using `ReadableStream` and populates the search grid in real-time as providers finish.
+  3. **Category Filtering**: Added pill-based category filters matching the Android app classification (Movies, TV Series, Anime, Cartoons, Documentaries, Livestreams, Torrents, NSFW, and Others). Integrated filtering on Home (carousel & sections), Search (real-time streaming grid), and History page client-side.
+- **Implementation**:
+  - Made `SearchProviderResult` `@Serializable` and public in [Application.kt](file:///home/kaos/Documents/cloudstream/server/src/main/kotlin/com/lagradost/cloudstream3/server/Application.kt).
+  - Appended chip styling classes in [styles.css](file:///home/kaos/Documents/cloudstream/server/web/css/styles.css).
+  - Implemented `CATEGORY_MAP`, item filtering helper `itemMatchesFilters`, and `renderFilterBar` inside [app.js](file:///home/kaos/Documents/cloudstream/server/web/js/app.js).
+  - Refactored `renderHome`, `renderSearch`, `renderHistory` and `removeHistoryItem` in `app.js` to support category filtering and streaming results.
+- **Verification**:
+  - Ran `bun run build` to verify JavaScript compiles cleanly to `/server/src/main/resources/web`.
+
+
