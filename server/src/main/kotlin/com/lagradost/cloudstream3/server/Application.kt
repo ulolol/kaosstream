@@ -38,6 +38,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
+import com.google.gson.Gson
 import java.io.File
 import java.net.InetAddress
 import kotlin.concurrent.thread
@@ -1444,7 +1445,8 @@ fun Application.module() {
                     "userAgent" to (entry?.userAgent ?: ""),
                 )
             }
-            call.respond(mapOf("count" to hosts.size, "entries" to hosts))
+            val result = mapOf("count" to hosts.size, "entries" to hosts)
+            call.respondText(Gson().toJson(result), ContentType.Application.Json)
         }
 
         delete("/api/v1/cookies") {
