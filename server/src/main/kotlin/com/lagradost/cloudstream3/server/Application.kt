@@ -1427,7 +1427,7 @@ fun Application.module() {
                 }
                 CookieJarManager.setCookies(req.host, req.cookies, req.userAgent, req.sourceUrl)
                 Log.i("CookieShare", "Received cookies from client for ${req.host}")
-                call.respond(mapOf("success" to true, "message" to "Cookies stored for ${req.host}"))
+                call.respondText(Gson().toJson(mapOf("success" to true, "message" to "Cookies stored for ${req.host}")), ContentType.Application.Json)
             } catch (e: Exception) {
                 call.respond(HttpStatusCode.BadRequest, "Invalid request: ${e.message}")
             }
@@ -1451,13 +1451,13 @@ fun Application.module() {
 
         delete("/api/v1/cookies") {
             CookieJarManager.clear()
-            call.respond(mapOf("success" to true, "message" to "All cookies cleared"))
+            call.respondText(Gson().toJson(mapOf("success" to true, "message" to "All cookies cleared")), ContentType.Application.Json)
         }
 
         delete("/api/v1/cookies/{host}") {
-            val host = call.parameters["host"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing host parameter")
+            val host = call.parameters["host"] ?: return@delete call.respondText(Gson().toJson(mapOf("error" to "Missing host parameter")), ContentType.Application.Json, HttpStatusCode.BadRequest)
             CookieJarManager.removeCookies(host)
-            call.respond(mapOf("success" to true, "message" to "Cookies cleared for $host"))
+            call.respondText(Gson().toJson(mapOf("success" to true, "message" to "Cookies cleared for $host")), ContentType.Application.Json)
         }
 
         get("/api/v1/plugins") {
