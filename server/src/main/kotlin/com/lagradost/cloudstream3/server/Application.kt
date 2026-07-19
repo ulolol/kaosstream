@@ -16,6 +16,7 @@ import com.lagradost.cloudstream3.server.storage.ServerDownloadManager
 import com.lagradost.cloudstream3.server.challenge.ChallengeClient
 import com.lagradost.cloudstream3.network.ChallengeCookieStore
 import com.lagradost.cloudstream3.network.CloudflareKillerJvm
+import com.lagradost.cloudstream3.network.CookieJarManager
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -1280,6 +1281,33 @@ fun Application.module() {
                 ChallengeCookieStore.apply(cookieHeader, userAgent, host)
             }
             call.respondText(response.body.decodeToString(), ContentType.Application.Json, HttpStatusCode.fromValue(response.status))
+        }
+
+        // --- 8.9 Cookie jar management ---
+        get("/api/v1/cookies") {
+            val hosts = CookieJarManager.getHosts().map { host ->
+                val entry = CookieJarManager.getEntry(host)
+                mapOf(
+                    "host" to host,
+                    "hasCookies" to (entry != null && !entry.isExpired),
+                    "createdAt" to (entry?.createdAt ?: 0),
+                    "expiresAt" to ((entry?.createdAt ?: 0) + (entry?.ttlMs ?: 0)),
+                    "ttlMs" to (entry?.ttlMs ?: 0),
+                    "userAgent" to (entry?.userAgent ?: ""),
+                )
+            }
+            call.respond(mapOf("count" to hosts.size, "entries" to hosts))
+        }
+
+        delete("/api/v1/cookies") {
+            CookieJarManager.clear()
+            call.respond(mapOf("success" to true, "message" to "All cookies cleared"))
+        }
+
+        delete("/api/v1/cookies/{host}") {
+            val host = call.parameters["host"] ?: return@delete call.respond(HttpStatusCode.BadRequest, "Missing host parameter")
+            CookieJarManager.removeCookies(host)
+            call.respond(mapOf("success" to true, "message" to "Cookies cleared for $host"))
         }
 
         get("/api/v1/plugins") {
