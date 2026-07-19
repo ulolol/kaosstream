@@ -86,7 +86,7 @@ export function getPlaybackRoute(fileUrl, fileMeta = {}) {
   let container = fileMeta.container;
   if (!container) {
     const extension = fileUrl.split('?')[0].split('.').pop().toLowerCase();
-    container = ['mkv', 'mp4', 'avi', 'webm', 'mov', 'flv', 'ts'].includes(extension) ? extension : 'mp4';
+    container = ['mkv', 'mp4', 'avi', 'webm', 'mov', 'flv', 'ts'].includes(extension) ? extension : 'unknown';
   }
 
   const vCodec = fileMeta.videoCodec || 'h264';

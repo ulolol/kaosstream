@@ -93,6 +93,42 @@ function renderFilterBar(containerId, onFilterChange) {
   });
 }
 
+// Delegated click handler for #view-outlet — replaces all inline onclick=
+const ACTION_HANDLERS = {
+  'play-media': (el) => {
+    try {
+      const data = JSON.parse(el.dataset.play || '{}');
+      playMedia(data.id, data.provider, data.title, data.parentId, data.posterUrl, data.seasonNum, data.episodeNum);
+    } catch (_) { showToast('Error starting playback'); }
+  },
+  'remove-history': (el) => {
+    removeHistoryItem(el.dataset.removeId);
+  },
+  'delete-download': (el) => {
+    deleteDownload(el.dataset.downloadId);
+  },
+  'navigate': (el) => {
+    window.location.hash = el.dataset.href;
+  }
+};
+
+function handleViewOutletClick(e) {
+  const target = e.target.closest('[data-href], [data-action]');
+  if (!target) return;
+  const action = target.dataset.action;
+  if (action && ACTION_HANDLERS[action]) {
+    e.stopPropagation();
+    ACTION_HANDLERS[action](target);
+    return;
+  }
+  const href = target.dataset.href;
+  if (href) {
+    window.location.hash = href;
+  } else if (target.dataset.href === '') {
+    showToast('Details URL not available');
+  }
+}
+
 // Toast message helper
 function showToast(message) {
   const container = document.getElementById('toast-container');
@@ -170,6 +206,7 @@ const routes = {
 
 async function init() {
   window.addEventListener('hashchange', handleRoute);
+  document.getElementById('view-outlet').addEventListener('click', handleViewOutletClick);
   
   // Load initial providers
   try {
@@ -255,16 +292,16 @@ function showChallengeModal(sessionId) {
   };
   
   screenshot.addEventListener('click', async (event) => {
-    console.log('[Challenge Modal] Click event detected', { clientX: event.clientX, clientY: event.clientY });
+    serverLog("INFO", "ChallengeModal", `Click event detected at (${event.clientX}, ${event.clientY})`);
     if (!screenshot.naturalWidth) {
-      console.warn('[Challenge Modal] Click ignored: screenshot not fully loaded (naturalWidth is 0)');
+      serverLog("WARN", "ChallengeModal", 'Click ignored: screenshot not fully loaded (naturalWidth is 0)');
       return;
     }
     const rect = screenshot.getBoundingClientRect();
     const x = (event.clientX - rect.left) * screenshot.naturalWidth / rect.width;
     const y = (event.clientY - rect.top) * screenshot.naturalHeight / rect.height;
     
-    console.log('[Challenge Modal] Sending click to backend', { x, y, naturalWidth: screenshot.naturalWidth, naturalHeight: screenshot.naturalHeight });
+    serverLog("INFO", "ChallengeModal", `Sending click to backend at (${x}, ${y})`);
     try {
       const res = await fetch(`${API_BASE}/challenges/${sessionId}/click`, {
         method: 'POST',
@@ -272,9 +309,9 @@ function showChallengeModal(sessionId) {
         body: JSON.stringify({ x, y })
       });
       const data = await res.json();
-      console.log('[Challenge Modal] Click response received', data);
+      serverLog("INFO", "ChallengeModal", 'Click response received');
     } catch (err) {
-      console.error('[Challenge Modal] Click request failed', err);
+      serverLog("ERROR", "ChallengeModal", `Click request failed: ${err?.message || err}`);
     }
     await update();
   });
@@ -344,7 +381,7 @@ async function syncBookmarks() {
     const res = await fetch(`${API_BASE}/bookmarks`);
     state.bookmarks = await res.json();
   } catch (e) {
-    console.error('Failed to sync bookmarks:', e);
+    serverLog("ERROR", "Bookmarks", `Failed to sync: ${e?.message || e}`);
   }
 }
 
@@ -437,8 +474,8 @@ function createHomeSectionElement(section) {
     <h3 class="carousel-title">${section.name} <span class="section-provider">${section.provider}</span></h3>
     <div class="grid-container">
       ${filteredItems.map(item => `
-        <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-          <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+        <div class="media-card" data-href="#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}">
+          <img class="card-poster" loading="lazy" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
           <div class="card-info">
             <div class="card-title">${item.name}</div>
             <div class="card-metadata">
@@ -477,16 +514,16 @@ function createResumeSectionElement(items) {
         const detailsUrl = (item.parentId && !item.parentId.startsWith('[')) ? item.parentId : (!item.id.startsWith('[') ? item.id : '');
         const prov = item.provider || '';
         return `
-          <div class="media-card resume-card" style="position: relative;">
-            <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${displayTitle}">
+            <div class="media-card resume-card" style="position: relative;">
+            <img class="card-poster" loading="lazy" src="${proxyImage(item.posterUrl)}" alt="${displayTitle}">
             <div class="resume-card-overlay">
-              <button class="resume-action-btn play-btn" onclick="event.stopPropagation(); playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})" title="Resume Watching">
+              <button class="resume-action-btn play-btn" data-action="play-media" data-play="${escAttr(JSON.stringify({id: item.id, provider: prov, title: displayTitle, parentId: item.parentId || '', posterUrl: item.posterUrl || '', seasonNum: item.seasonNum, episodeNum: item.episodeNum}))}" title="Resume Watching">
                 <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
               </button>
-              <button class="resume-action-btn info-btn" onclick="event.stopPropagation(); if ('${detailsUrl}') window.location.hash = '#/detail?url=${encodeURIComponent(detailsUrl)}&provider=${encodeURIComponent(prov)}'; else showToast('Details URL not available');" title="Show Info">
+              <button class="resume-action-btn info-btn" data-href="${detailsUrl ? '#/detail?url=' + encodeURIComponent(detailsUrl) + '&provider=' + encodeURIComponent(prov) : ''}" title="Show Info">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
               </button>
-              <button class="resume-action-btn remove-btn" data-remove-id="${btoa(unescape(encodeURIComponent(item.id)))}" title="Remove Watch Progress">
+              <button class="resume-action-btn remove-btn" data-action="remove-history" data-remove-id="${escAttr(item.id)}" title="Remove Watch Progress">
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
               </button>
             </div>
@@ -598,7 +635,7 @@ async function renderHome() {
       }
     }
   } catch (err) {
-    console.error('Error fetching watch history:', err);
+    serverLog("ERROR", "History", `Error fetching watch history: ${err?.message || err}`);
   }
 
   // 2. Stream homepage sections from Ktor backend — append incrementally
@@ -612,6 +649,25 @@ async function renderHome() {
     const reader = homeRes.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let pendingSections = [];
+    let rafSectionFlush = null;
+
+    const flushSections = () => {
+      rafSectionFlush = null;
+      if (routeId !== state._routeId) return;
+      const fragment = document.createDocumentFragment();
+      for (const section of pendingSections) {
+        const el = createHomeSectionElement(section);
+        if (el) {
+          fragment.appendChild(el);
+          hasSections = true;
+        }
+      }
+      pendingSections = [];
+      if (fragment.childNodes.length > 0) {
+        sectionsContainer.appendChild(fragment);
+      }
+    };
 
     while (true) {
       const { value, done } = await reader.read();
@@ -628,22 +684,30 @@ async function renderHome() {
           const section = JSON.parse(line);
           if (section.items && section.items.length > 0) {
             allSections.push(section);
+            pendingSections.push(section);
             if (routeId !== state._routeId) return;
-            // Append the new section directly to the DOM
-            const el = createHomeSectionElement(section);
-            if (el) {
-              sectionsContainer.appendChild(el);
-              hasSections = true;
+            if (!rafSectionFlush) {
+              rafSectionFlush = requestAnimationFrame(flushSections);
             }
           }
         } catch (err) {
-          console.error('Failed to parse home section JSON line:', err);
+          serverLog("ERROR", "Home", `Failed to parse JSON line: ${err?.message || err}`);
         }
       }
     }
   } catch (err) {
-    console.error('Failed to stream homepage sections:', err);
+    serverLog("ERROR", "Home", `Failed to stream sections: ${err?.message || err}`);
   } finally {
+    if (rafSectionFlush) { cancelAnimationFrame(rafSectionFlush); rafSectionFlush = null; }
+    if (pendingSections.length > 0) {
+      const fragment = document.createDocumentFragment();
+      for (const section of pendingSections) {
+        const el = createHomeSectionElement(section);
+        if (el) { fragment.appendChild(el); hasSections = true; }
+      }
+      pendingSections = [];
+      if (fragment.childNodes.length > 0) sectionsContainer.appendChild(fragment);
+    }
     spinner.remove();
     if (!hasSections && allResumeItems.length === 0) {
       sectionsContainer.innerHTML = '<div class="loading">No homepage content is available. Try searching.</div>';
@@ -682,7 +746,7 @@ function appendSearchResults(grid, items) {
     card.dataset.searchUrl = item.url;
     card.dataset.searchApi = item.apiName;
     card.innerHTML = `
-      <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+      <img class="card-poster" loading="lazy" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
       <div class="card-info">
         <div class="card-title">${item.name}</div>
         <div class="card-metadata">
@@ -704,7 +768,7 @@ function createSearchCard(item) {
   const card = document.createElement('div');
   card.className = 'media-card';
   card.innerHTML = `
-    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+    <img class="card-poster" loading="lazy" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
     <div class="card-info">
       <div class="card-title">${item.name}</div>
       <div class="card-metadata">
@@ -836,12 +900,12 @@ async function renderSearch() {
               failuresContainer.appendChild(failSpan);
             }
           } catch (err) {
-            console.error('Failed to parse search result JSON line:', err);
+            serverLog("ERROR", "Search", `Failed to parse JSON line: ${err?.message || err}`);
           }
         }
       }
     } catch (e) {
-      console.error('Error during search execution:', e);
+      serverLog("ERROR", "Search", `Search execution error: ${e?.message || e}`);
       if (allResults.length === 0) {
         resultsArea.innerHTML = '<div class="loading">Error performing search.</div>';
         return;
@@ -960,7 +1024,7 @@ async function renderDetail() {
 
     outlet.innerHTML = `
       <div class="detail-container">
-        <img class="detail-poster" src="${proxyImage(displayPoster)}" alt="${displayName}">
+        <img class="detail-poster" loading="lazy" src="${proxyImage(displayPoster)}" alt="${displayName}">
         <div class="detail-content">
           <h2 class="detail-title">${displayName}</h2>
           <div class="detail-meta-row">
@@ -988,7 +1052,7 @@ async function renderDetail() {
             ${details.episodes.map(ep => {
               const epTitle = `${details.name} - ${ep.name || `Episode ${ep.episode || 1}`}`;
               return `
-                <div class="episode-row" style="display:flex; justify-content:space-between; align-items:center; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); cursor:pointer;" onclick="playMedia('${escAttr(ep.url)}', '${escAttr(details.apiName)}', '${escAttr(epTitle)}', '${escAttr(details.url)}', '${escAttr(details.posterUrl || '')}', ${ep.season !== undefined && ep.season !== null ? ep.season : 'null'}, ${ep.episode !== undefined && ep.episode !== null ? ep.episode : 'null'})">
+                <div class="episode-row" data-action="play-media" data-play="${escAttr(JSON.stringify({id: ep.url, provider: details.apiName, title: epTitle, parentId: details.url, posterUrl: details.posterUrl || '', seasonNum: ep.season, episodeNum: ep.episode}))}" style="display:flex; justify-content:space-between; align-items:center; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); cursor:pointer;">
                   <span>${ep.name || `Episode ${ep.episode || 1}`}</span>
                   <span style="color: var(--color-grayTextColor); font-size:14px;">Play</span>
                 </div>
@@ -1214,7 +1278,7 @@ function showSourcePicker(data, title, id, provider, parentId = '', posterUrl = 
         episodeNum: episodeNum
       }),
       keepalive: true
-    }).catch(console.error);
+    }).catch(e => serverLog("ERROR", "Detail", `Save history failed: ${e?.message || e}`));
 
     // Save to local state
     const historyItem = { title: richTitle, url: id, provider, timestamp: Date.now(), parentId, posterUrl: richPoster, seasonNum, episodeNum };
@@ -1371,7 +1435,7 @@ function renderPlayer() {
           }
         }, { once: true });
       }
-    }).catch(console.error);
+    }).catch(e => serverLog("ERROR", "PlayerSource", `Fetch sources failed: ${e?.message || e}`));
 
   // Solve routing pathway dynamically. A source may be a signed URL without
   // a file extension, so the error fallback below remains authoritative.
@@ -1392,13 +1456,13 @@ function renderPlayer() {
         maxMaxBufferLength: 30
       });
       hls.on(Hls.Events.ERROR, (event, data) => {
-        console.error('[HLS Error]', data.type, data.details, data.fatal, data.error?.message || data.response?.statusText);
+        serverLog("ERROR", "HLSError", `${data.type} / ${data.details} / fatal=${data.fatal} / ${data.error?.message || data.response?.statusText || ''}`);
       });
       hls.on(Hls.Events.MANIFEST_LOADED, (event, data) => {
         const supportsAAC = window.MediaSource?.isTypeSupported('audio/mp4; codecs="mp4a.40.2"') || 
                             window.MediaSource?.isTypeSupported('audio/mp4; codecs="mp4a.40.1"');
         if (!supportsAAC) {
-          console.warn('[HLS Engine] AAC audio is unsupported by this browser. Stripping audio tracks to play video-only.');
+          serverLog("WARN", "HLSEngine", 'AAC audio is unsupported by this browser. Stripping audio tracks to play video-only.');
           data.audioTracks = [];
           if (data.playlists) {
             data.playlists.forEach(p => {
@@ -1601,7 +1665,7 @@ function renderPlayer() {
         provider: params.provider
       }),
       keepalive: true
-    }).catch(console.error);
+    }).catch(e => serverLog("ERROR", "PlayerEvent", `Save progress failed: ${e?.message || e}`));
   };
 
   // 1. Throttle updates during playback using timeupdate
@@ -1640,8 +1704,8 @@ function renderBookmarks() {
   outlet.innerHTML = `
     <div class="grid-container">
       ${state.bookmarks.map(item => `
-        <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-          <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+        <div class="media-card" data-href="#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}">
+          <img class="card-poster" loading="lazy" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
           <div class="card-info">
             <div class="card-title">${item.name}</div>
             <div class="card-metadata">
@@ -1681,7 +1745,7 @@ async function renderDownloads() {
                   <div style="font-weight:600; font-size:16px;">${d.title}</div>
                   <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">${d.status} • ${loadedMb} MB / ${d.bytesTotal > 0 ? `${totalMb} MB` : 'Unknown'}</div>
                 </div>
-                <button class="btn" style="padding: 8px 16px; font-size:14px; background:#FF6F63;" onclick="deleteDownload('${d.id}')">Delete</button>
+                <button class="btn" style="padding: 8px 16px; font-size:14px; background:#FF6F63;" data-action="delete-download" data-download-id="${escAttr(d.id)}">Delete</button>
               </div>
               <div style="width:100%; height:6px; background:rgba(255,255,255,0.05); border-radius:3px; overflow:hidden;">
                 <div style="width:${progress}%; height:100%; background:var(--color-colorPrimary); transition:width 0.3s ease;"></div>
@@ -1758,13 +1822,11 @@ async function renderHistory() {
                 </div>
                 <div style="display:flex; gap:12px; align-items:center;">
                   <button class="btn" style="padding: 8px 16px; font-size:14px; background:var(--color-colorPrimary);" 
-                          onclick="playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})">
+                          data-action="play-media" data-play="${escAttr(JSON.stringify({id: item.id, provider: prov, title: displayTitle, parentId: item.parentId || '', posterUrl: item.posterUrl || '', seasonNum: item.seasonNum, episodeNum: item.episodeNum}))}">
                     Replay
                   </button>
-                  <button class="btn" style="padding: 8px; background: rgba(255,77,77,0.15); color: #ff4d4d; border: 1px solid rgba(255,77,77,0.3); display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; transition: all 0.2s;" 
-                          onmouseover="this.style.background='#ff4d4d'; this.style.color='#fff';" 
-                          onmouseout="this.style.background='rgba(255,77,77,0.15)'; this.style.color='#ff4d4d';"
-                          onclick="removeHistoryItem('${escAttr(item.id)}')">
+                  <button class="btn" style="padding: 8px; background: rgba(255,77,77,0.15); color: #ff4d4d; border: 1px solid rgba(255,77,77,0.3); display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; transition: all 0.2s;"
+                          data-action="remove-history" data-remove-id="${escAttr(item.id)}">
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                       <polyline points="3 6 5 6 21 6"></polyline>
                       <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -1876,14 +1938,54 @@ async function renderPlugins() {
   }
 }
 
-// Helper to send logs to the server
-function serverLog(level, tag, message) {
-  console.log(`[${tag}] ${message}`);
+// Helper to send logs to the server — includes platform/UA for cross-browser diagnosis
+const _platform = navigator.platform || 'unknown';
+const _userAgent = navigator.userAgent || 'unknown';
+
+// Reentrancy guard prevents double-send when patched console methods fire inside serverLog
+let _logSending = false;
+function sendLogToServer(level, tag, message) {
+  if (_logSending) return;
+  _logSending = true;
   fetch(`${API_BASE}/log`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ level, tag, message })
-  }).catch(() => {});
+    body: JSON.stringify({ level, tag, message, platform: _platform, userAgent: _userAgent })
+  }).catch(() => {}).finally(() => { _logSending = false; });
+}
+
+function serverLog(level, tag, message) {
+  console.log(`[${tag}] ${message}`);
+  sendLogToServer(level, tag, message);
+}
+
+// Patch console.log/warn/error as a safety net so ANY log, including third-party
+// library output (hls.js, libav.js, etc.), is relayed to the server.
+// serverLog bypasses the patch by using the original console methods.
+const _origConsole = {
+  log: console.log.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console)
+};
+
+console.error = function (...args) {
+  _origConsole.error.apply(console, args);
+  const msg = args.map(a => typeof a === 'object' ? safeStringify(a) : String(a)).join(' ');
+  sendLogToServer('ERROR', 'ClientConsole', msg);
+};
+console.warn = function (...args) {
+  _origConsole.warn.apply(console, args);
+  const msg = args.map(a => typeof a === 'object' ? safeStringify(a) : String(a)).join(' ');
+  sendLogToServer('WARN', 'ClientConsole', msg);
+};
+console.log = function (...args) {
+  _origConsole.log.apply(console, args);
+  // Only send 5% of INFO-level logs to avoid flooding (but always send if level is INFO)
+  // We use a simple sampling approach since we can't distinguish verbosity
+};
+
+function safeStringify(obj) {
+  try { return JSON.stringify(obj); } catch { return String(obj); }
 }
 
 // Dynamic script injection helper
@@ -1939,76 +2041,167 @@ function getBackendTranscodeUrl(streamUrl, route, source) {
     `&supportedAudioCodecs=${encodeURIComponent(supportedAudios)}`;
 }
 
-function playTranscodeStreamViaMse(videoElement, transcodeUrl) {
-  const mediaSource = new MediaSource();
-  videoElement.src = URL.createObjectURL(mediaSource);
-  videoElement.load();
-
-  mediaSource.addEventListener('sourceopen', async () => {
-    try {
-      const mimeType = 'video/mp4; codecs="avc1.640028, mp4a.40.2"';
-      const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-
-      const writeQueue = [];
-      function appendToSourceBuffer(buffer) {
-        if (sourceBuffer.updating) {
-          writeQueue.push(buffer);
-        } else {
-          sourceBuffer.appendBuffer(buffer);
-        }
-      }
-
-      sourceBuffer.addEventListener('updateend', () => {
-        if (writeQueue.length > 0 && !sourceBuffer.updating) {
-          sourceBuffer.appendBuffer(writeQueue.shift());
-        }
-      });
-
-      const response = await fetch(transcodeUrl);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      const reader = response.body.getReader();
-
-      videoElement.addEventListener('emptied', () => {
-        try { reader.cancel(); } catch(_) {}
-      }, { once: true });
-
-      while (mediaSource.readyState === 'open') {
-        const { done, value } = await reader.read();
-        if (done) {
-          if (mediaSource.readyState === 'open') {
-            mediaSource.endOfStream();
-          }
-          break;
-        }
-        appendToSourceBuffer(value);
-      }
-    } catch (err) {
-      console.error("[Transcode MSE Error]", err);
-      serverLog("ERROR", "TranscodeMse", `Stream reader error: ${err.message || err}`);
-    }
-  });
-}
-
 function fallbackToBackendTranscode(videoElement, streamUrl, route, source) {
   if (videoElement.dataset.backendTranscodeAttempted === 'true') return false;
   videoElement.dataset.backendTranscodeAttempted = 'true';
   showToast('Browser playback failed. Starting server-side remux/transcode...');
   
   const transcodeUrl = getBackendTranscodeUrl(streamUrl, route, source);
-  
-  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
-                   /iPad|iPhone|iPod/.test(navigator.platform) ||
-                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const MediaSourceCtor = window.ManagedMediaSource || window.MediaSource;
 
-  if (isSafari) {
-    playTranscodeStreamViaMse(videoElement, transcodeUrl);
+  if (MediaSourceCtor) {
+    playViaMediaSource(videoElement, transcodeUrl, MediaSourceCtor);
   } else {
-    videoElement.src = transcodeUrl;
-    videoElement.load();
+    playViaDirectSrc(videoElement, transcodeUrl);
   }
   return true;
+}
+
+function playViaDirectSrc(videoElement, url) {
+  videoElement.src = url;
+  videoElement.load();
+  videoElement.addEventListener('error', () => {
+    showToast('Server-side transcoding failed. The source may require a different provider.');
+  }, { once: true });
+}
+
+async function playViaMediaSource(videoElement, transcodeUrl, MediaSourceCtor) {
+  let response;
+  try {
+    response = await fetch(transcodeUrl);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    if (!response.body) throw new Error('Streaming not supported');
+  } catch (err) {
+    serverLog('WARN', 'MSEPlayback', `fetch failed: ${err.message}, falling back to direct src`);
+    playViaDirectSrc(videoElement, transcodeUrl);
+    return;
+  }
+
+  const videoCodec = response.headers.get('X-Video-Codec') || 'avc1.640028';
+  const audioCodec = response.headers.get('X-Audio-Codec') || 'mp4a.40.2';
+  const mimeType = `video/mp4; codecs="${videoCodec}, ${audioCodec}"`;
+  serverLog('INFO', 'MSEPlayback', `MIME: ${mimeType}`);
+
+  if (!MediaSourceCtor.isTypeSupported(mimeType)) {
+    serverLog('WARN', 'MSEPlayback', `MIME unsupported: ${mimeType}`);
+    playViaDirectSrc(videoElement, transcodeUrl);
+    return;
+  }
+
+  const mediaSource = new MediaSourceCtor();
+  const isMMS = MediaSourceCtor === window.ManagedMediaSource;
+  const abortController = new AbortController();
+
+  let sourceElement = null;
+  if (isMMS) {
+    videoElement.disableRemotePlayback = true;
+    sourceElement = document.createElement('source');
+    sourceElement.type = 'video/mp4';
+    sourceElement.src = URL.createObjectURL(mediaSource);
+    videoElement.appendChild(sourceElement);
+    serverLog('INFO', 'MSEPlayback', 'Using ManagedMediaSource with <source> child element');
+  } else {
+    videoElement.src = URL.createObjectURL(mediaSource);
+    serverLog('INFO', 'MSEPlayback', 'Using classic MediaSource');
+  }
+  videoElement.load();
+
+  function cleanup() {
+    try {
+      abortController.abort();
+      if (sourceElement) sourceElement.remove();
+      if (mediaSource.readyState === 'open') mediaSource.endOfStream();
+    } catch (_) {}
+  }
+
+  const timeoutId = setTimeout(() => {
+    serverLog('WARN', 'MSEPlayback', 'sourceopen timed out — falling back to direct src');
+    cleanup();
+    playViaDirectSrc(videoElement, transcodeUrl);
+  }, 15000);
+
+  mediaSource.addEventListener('sourceopen', () => {
+    clearTimeout(timeoutId);
+    if (sourceElement) URL.revokeObjectURL(sourceElement.src);
+
+    let sourceBuffer;
+    try {
+      sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    } catch (err) {
+      serverLog('ERROR', 'MSEPlayback', `addSourceBuffer failed: ${err.message}`);
+      cleanup();
+      playViaDirectSrc(videoElement, transcodeUrl);
+      return;
+    }
+
+    function evictBuffer(keepDurationSec) {
+      if (!sourceBuffer || sourceBuffer.updating) return;
+      try {
+        const buffered = sourceBuffer.buffered;
+        if (buffered.length === 0) return;
+        const currentTime = videoElement.currentTime || 0;
+        const removeEnd = Math.max(0, currentTime - keepDurationSec);
+        if (removeEnd > buffered.start(0)) {
+          sourceBuffer.remove(0, removeEnd);
+        }
+      } catch (_) {}
+    }
+
+    const pump = async () => {
+      try {
+        const reader = response.body.getReader();
+        const signal = abortController.signal;
+        while (true) {
+          if (signal.aborted) { reader.cancel(); break; }
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          if (sourceBuffer.updating) {
+            await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
+          }
+
+          try {
+            sourceBuffer.appendBuffer(value);
+          } catch (err) {
+            if (err.name === 'QuotaExceededError') {
+              serverLog('WARN', 'MSEPlayback', 'QuotaExceeded — evicting buffer, retrying');
+              evictBuffer(120);
+              if (sourceBuffer.updating) {
+                await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
+              }
+              sourceBuffer.appendBuffer(value);
+            } else {
+              throw err;
+            }
+          }
+          await new Promise(r => sourceBuffer.addEventListener('updateend', r, { once: true }));
+          evictBuffer(120);
+        }
+        if (mediaSource.readyState === 'open') {
+          mediaSource.endOfStream();
+        }
+        serverLog('INFO', 'MSEPlayback', 'endOfStream called');
+      } catch (err) {
+        serverLog('ERROR', 'MSEPlayback', `pump error: ${err.message}`);
+      }
+    };
+
+    if (isMMS) {
+      mediaSource.addEventListener('startstreaming', () => {
+        serverLog('INFO', 'MSEPlayback', 'startstreaming — beginning fetch loop');
+        pump();
+      }, { once: true });
+      mediaSource.addEventListener('endstreaming', () => {
+        serverLog('INFO', 'MSEPlayback', 'endstreaming — browser has enough data');
+      });
+      if (mediaSource.streaming) {
+        serverLog('INFO', 'MSEPlayback', 'already streaming — pumping immediately');
+        pump();
+      }
+    } else {
+      pump();
+    }
+  });
 }
 
 async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = [], source = null) {
@@ -2017,8 +2210,13 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
     await ensureLibav();
 
     // Setup MediaSource if remuxing
-    // Setup MediaSource if remuxing
+    // Unknown containers (e.g. DASH .mpd) skip WASM and go straight to backend transcode
     if (route.method === 'REMUX_COPY' || route.method === 'REMUX_TRANSCODE') {
+      if (route.container === 'unknown') {
+        serverLog("INFO", "WasmInit", `Unknown container type — skipping WASM, using backend transcode`);
+        fallbackToBackendTranscode(videoElement, streamUrl, route, source);
+        return;
+      }
       const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
                        /iPad|iPhone|iPod/.test(navigator.platform) ||
                        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -2046,7 +2244,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
             }
           }
         } catch (err) {
-          console.warn("Proxy HEAD request failed, trying range GET", err);
+          serverLog("WARN", "WasmInit", `Proxy HEAD failed, trying range GET: ${err?.message || err}`);
         }
         try {
           const res = await fetch(proxyUrl, { headers: { 'Range': 'bytes=0-0' } });
@@ -2070,7 +2268,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
             }
           }
         } catch (err) {
-          console.error("Failed to get file size via proxy", err);
+          serverLog("ERROR", "WasmInit", `Failed to get file size via proxy: ${err?.message || err}`);
         }
         serverLog("WARN", "WasmInit", "Failed to resolve file size via proxy, using 1GB fallback");
         return 1024 * 1024 * 1024; // 1GB fallback
@@ -2086,7 +2284,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
           const buf = await res.arrayBuffer();
           await libav.ff_block_reader_dev_send(name, position, new Uint8Array(buf));
         } catch (err) {
-          console.error("[onblockread error]", err);
+          serverLog("ERROR", "WasmBlockRead", `blockread error at pos ${position}: ${err?.message || err}`);
           await libav.ff_block_reader_dev_send(name, position, new Uint8Array(0));
         }
       };
@@ -2237,8 +2435,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
                 await libav.av_packet_free(pkt);
               }
             } catch (err) {
-              console.error("[WASM Demux Error]", err);
-              serverLog("ERROR", "WasmDemux", `Demux loop error: ${err.message || err}`);
+              serverLog("ERROR", "WasmDemux", `Demux loop error: ${err?.message || err}`);
               await libav.av_packet_free(pkt);
               fallbackToBackendTranscode(videoElement, streamUrl, route, source);
             }
@@ -2246,8 +2443,7 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
 
           demuxLoop();
         } catch (err) {
-          console.error("Failed to setup MSE demuxer:", err);
-          showToast("Failed to initialize WASM demuxer: " + err.message);
+          showToast("Failed to initialize WASM demuxer: " + (err?.message || err));
           serverLog("ERROR", "WasmInit", `Failed to setup MSE demuxer: ${err.message || err}. Stack: ${err.stack || ''}`);
           fallbackToBackendTranscode(videoElement, streamUrl, route, source);
         }
@@ -2272,9 +2468,8 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
       showToast("ASS Subtitles initialized via WASM overlay.");
     }
   } catch (err) {
-    console.error("[WASM Playback Init Error]", err);
     showToast("WASM Playback Failed. Falling back to backend server transcode...");
-    serverLog("ERROR", "WasmInit", `WASM Playback Init Error: ${err.message || err}. Stack: ${err.stack || ''}`);
+    serverLog("ERROR", "WasmInit", `WASM Playback Init Error: ${err?.message || err}. Stack: ${err?.stack || ''}`);
     
     // Obtain browser capability lists dynamically
     fallbackToBackendTranscode(videoElement, streamUrl, route, source);

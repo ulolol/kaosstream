@@ -69,7 +69,7 @@ body {
   text-decoration: none;
   font-weight: 500;
   font-size: 15px;
-  transition: all var(--transition-speed) ease;
+  transition: background var(--transition-speed) ease, color var(--transition-speed) ease;
 }
 
 .nav-item:hover {
@@ -153,6 +153,7 @@ body {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.03);
   cursor: pointer;
+  will-change: transform;
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease;
   position: relative;
 }
@@ -200,6 +201,8 @@ body {
 
 /* Scroll grids (Carousels) */
 .carousel-section {
+  content-visibility: auto;
+  contain-intrinsic-size: 400px;
   margin-bottom: 40px;
 }
 
@@ -293,6 +296,7 @@ body {
 
 .btn-primary:hover {
   background: #2539e6;
+  will-change: transform;
   transform: translateY(-2px);
   box-shadow: 0 0 16px rgba(61, 80, 250, 0.4);
 }
@@ -579,6 +583,7 @@ body {
   border-radius: var(--border-radius-md);
   box-shadow: 0 8px 24px rgba(0,0,0,0.5);
   font-weight: 500;
+  will-change: transform;
   animation: slideIn 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
   min-width: 280px;
 }
@@ -698,6 +703,7 @@ body {
   backdrop-filter: blur(8px);
   cursor: pointer;
   font: 600 13px Outfit, sans-serif;
+  will-change: transform;
   transition: transform 0.2s ease, background 0.2s ease;
 }
 
@@ -1049,6 +1055,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  will-change: transform;
   transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
@@ -1132,4 +1139,40 @@ body {
 
 .player-container.controls-hidden {
   cursor: none;
+}
+
+/* Premium Category Filters */
+.category-filters-container {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 16px 16px 16px;
+  margin-bottom: 8px;
+  scrollbar-width: none; /* Firefox */
+}
+.category-filters-container::-webkit-scrollbar {
+  display: none; /* Chrome/Safari */
+}
+.category-filter-chip {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--color-grayTextColor, #999);
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.category-filter-chip:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+.category-filter-chip.active {
+  background: var(--color-colorPrimary, #3d50fa);
+  border-color: var(--color-colorPrimary, #3d50fa);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(61, 80, 250, 0.35);
 }

@@ -31,3 +31,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile> {
         freeCompilerArgs.add("-Xexpect-actual-classes")
     }
 }
+
+tasks.withType<JavaCompile> {
+    options.release.set(17)
+}
