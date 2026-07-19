@@ -505,18 +505,6 @@ function createResumeSectionElement(items) {
       }).join('')}
     </div>
   `;
-  // Wire remove buttons
-  sectionDiv.querySelectorAll('.remove-btn[data-remove-id]').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      try {
-        const id = decodeURIComponent(escape(atob(btn.dataset.removeId)));
-        removeHistoryItem(id);
-      } catch (_) {
-        showToast('Error identifying item to remove');
-      }
-    });
-  });
   return sectionDiv;
 }
 
