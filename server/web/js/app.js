@@ -20,8 +20,78 @@ const state = {
   activeProvider: localStorage.getItem('cs_active_provider') || '',
   providers: [],
   history: JSON.parse(localStorage.getItem('cs_history') || '[]'),
-  bookmarks: []
+  bookmarks: [],
+  activeFilters: [],
+  _routeId: 0
 };
+
+// Premium Category Filters Mappings & Helpers
+const CATEGORY_MAP = {
+  'Movies': ['Movie'],
+  'TV Series': ['TvSeries'],
+  'Anime': ['Anime', 'OVA', 'AnimeMovie'],
+  'Asian Drama': ['AsianDrama'],
+  'Cartoons': ['Cartoon'],
+  'Documentaries': ['Documentary'],
+  'Livestreams': ['Live'],
+  'Torrents': ['Torrent'],
+  'NSFW': ['NSFW'],
+  'Others': ['Others', 'Music', 'AudioBook', 'CustomMedia', 'Audio', 'Podcast', 'Video']
+};
+
+function itemMatchesFilters(item, activeCategories) {
+  if (!activeCategories || activeCategories.length === 0) return true;
+  const itemType = item.type || 'Media';
+  for (const category of activeCategories) {
+    const allowedTypes = CATEGORY_MAP[category];
+    if (allowedTypes) {
+      if (allowedTypes.includes(itemType)) return true;
+      if (category === 'Others') {
+        const isKnownType = Object.values(CATEGORY_MAP)
+          .filter((_, idx) => Object.keys(CATEGORY_MAP)[idx] !== 'Others')
+          .some(types => types.includes(itemType));
+        if (!isKnownType) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function renderFilterBar(containerId, onFilterChange) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  // Build filter chips once using event delegation
+  if (!container._filterBuilt) {
+    const categories = Object.keys(CATEGORY_MAP);
+    container.innerHTML = `
+      <div class="category-filters-container">
+        ${categories.map(cat =>
+          `<button class="category-filter-chip" data-category="${cat}">${cat}</button>`
+        ).join('')}
+      </div>
+    `;
+    // Single delegated click listener — no per-button rebinding
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest('.category-filter-chip');
+      if (!btn) return;
+      const cat = btn.dataset.category;
+      if (state.activeFilters.includes(cat)) {
+        state.activeFilters = state.activeFilters.filter(c => c !== cat);
+      } else {
+        state.activeFilters.push(cat);
+      }
+      btn.classList.toggle('active');
+      if (onFilterChange) onFilterChange();
+    });
+    container._filterBuilt = true;
+  }
+
+  // Sync active states without rebuilding DOM
+  container.querySelectorAll('.category-filter-chip').forEach(btn => {
+    btn.classList.toggle('active', state.activeFilters.includes(btn.dataset.category));
+  });
+}
 
 // Toast message helper
 function showToast(message) {
@@ -279,6 +349,8 @@ async function syncBookmarks() {
 }
 
 function handleRoute() {
+  state._routeId++;
+  state.activeFilters = [];
   const hash = window.location.hash || '#/';
   
   // Clean up any existing Hls instances or timers
@@ -353,99 +425,195 @@ function getQueryParams() {
 
 // --- View Renders ---
 
+// Build a single section DOM element (used both for incremental append and filter rebuild)
+function createHomeSectionElement(section) {
+  const filteredItems = section.items.filter(item => itemMatchesFilters(item, state.activeFilters));
+  if (filteredItems.length === 0) return null;
+  const div = document.createElement('div');
+  div.className = 'carousel-section';
+  div.dataset.sectionName = section.name;
+  div.dataset.sectionProvider = section.provider;
+  div.innerHTML = `
+    <h3 class="carousel-title">${section.name} <span class="section-provider">${section.provider}</span></h3>
+    <div class="grid-container">
+      ${filteredItems.map(item => `
+        <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
+          <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+          <div class="card-info">
+            <div class="card-title">${item.name}</div>
+            <div class="card-metadata">
+              <span>${item.type || 'Media'}</span>
+              ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
+            </div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  return div;
+}
+
+// Build the resume section DOM element
+function createResumeSectionElement(items) {
+  const filteredItems = items.filter(item => {
+    const itemWithNormalizedType = {
+      ...item,
+      type: item.type || (item.seasonNum !== null && item.seasonNum !== undefined ? 'TvSeries' : 'Movie')
+    };
+    return itemMatchesFilters(itemWithNormalizedType, state.activeFilters);
+  });
+  if (filteredItems.length === 0) return null;
+  const sectionDiv = document.createElement('div');
+  sectionDiv.className = 'carousel-section';
+  sectionDiv.innerHTML = `
+    <h3 class="carousel-title">Resume Watching</h3>
+    <div class="grid-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">
+      ${filteredItems.map(item => {
+        const pct = Math.min(100, Math.round((item.positionMs / item.durationMs) * 100));
+        const displayTitle = item.title || 'Untitled';
+        const label = (item.seasonNum != null && item.episodeNum != null)
+          ? `S${item.seasonNum}E${item.episodeNum}`
+          : 'Movie';
+        const detailsUrl = (item.parentId && !item.parentId.startsWith('[')) ? item.parentId : (!item.id.startsWith('[') ? item.id : '');
+        const prov = item.provider || '';
+        return `
+          <div class="media-card resume-card" style="position: relative;">
+            <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${displayTitle}">
+            <div class="resume-card-overlay">
+              <button class="resume-action-btn play-btn" onclick="event.stopPropagation(); playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})" title="Resume Watching">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              </button>
+              <button class="resume-action-btn info-btn" onclick="event.stopPropagation(); if ('${detailsUrl}') window.location.hash = '#/detail?url=${encodeURIComponent(detailsUrl)}&provider=${encodeURIComponent(prov)}'; else showToast('Details URL not available');" title="Show Info">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              </button>
+              <button class="resume-action-btn remove-btn" data-remove-id="${btoa(unescape(encodeURIComponent(item.id)))}" title="Remove Watch Progress">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 6px; background: rgba(255,255,255,0.15);">
+              <div style="width: ${pct}%; height: 100%; background: var(--color-colorPrimary);"></div>
+            </div>
+            <div class="card-info">
+              <div class="card-title">${displayTitle}</div>
+              <div class="card-metadata">
+                <span>${label}</span>
+                <span>${pct}%</span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+  // Wire remove buttons
+  sectionDiv.querySelectorAll('.remove-btn[data-remove-id]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      try {
+        const id = decodeURIComponent(escape(atob(btn.dataset.removeId)));
+        removeHistoryItem(id);
+      } catch (_) {
+        showToast('Error identifying item to remove');
+      }
+    });
+  });
+  return sectionDiv;
+}
+
+// Wire remove buttons for resume section (used after rebuilding from data)
+function wireResumeRemoveButtons() {
+  const container = document.getElementById('resume-container');
+  if (!container) return;
+  container.querySelectorAll('.remove-btn[data-remove-id]').forEach(btn => {
+    // Avoid duplicate listeners
+    if (btn._removeWired) return;
+    btn._removeWired = true;
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      try {
+        const id = decodeURIComponent(escape(atob(btn.dataset.removeId)));
+        removeHistoryItem(id);
+      } catch (_) {
+        showToast('Error identifying item to remove');
+      }
+    });
+  });
+}
+
 async function renderHome() {
+  const routeId = state._routeId;
   const outlet = document.getElementById('view-outlet');
   outlet.innerHTML = `
+    <div id="home-filters-bar"></div>
     <div id="resume-container"></div>
     <div id="sections-container"></div>
     <div id="home-spinner" class="loading">Loading home sections...</div>
   `;
 
-  const resumeContainer = document.getElementById('resume-container');
   const sectionsContainer = document.getElementById('sections-container');
   const spinner = document.getElementById('home-spinner');
 
-  let hasResume = false;
+  let allResumeItems = [];
+  let allSections = [];
   let hasSections = false;
 
-  // 1. Fetch and render watch history (Resume section) immediately
+  // Called only when filters change — rebuilds from stored data
+  const rebuildOnFilterChange = () => {
+    if (routeId !== state._routeId) return;
+    // Rebuild resume section
+    const resumeContainer = document.getElementById('resume-container');
+    if (resumeContainer) {
+      const resumeEl = createResumeSectionElement(allResumeItems);
+      resumeContainer.innerHTML = '';
+      if (resumeEl) resumeContainer.appendChild(resumeEl);
+      wireResumeRemoveButtons();
+    }
+    // Rebuild all sections
+    if (sectionsContainer) {
+      sectionsContainer.innerHTML = '';
+      let renderedAny = false;
+      allSections.forEach(section => {
+        const el = createHomeSectionElement(section);
+        if (el) {
+          sectionsContainer.appendChild(el);
+          renderedAny = true;
+        }
+      });
+      hasSections = renderedAny;
+    }
+    // Show empty state if nothing visible
+    if (!hasSections && allResumeItems.length === 0) {
+      sectionsContainer.innerHTML = '<div class="loading">No homepage content is available. Try searching.</div>';
+    }
+  };
+
+  renderFilterBar('home-filters-bar', rebuildOnFilterChange);
+
+  // 1. Fetch and render watch history (Resume section) — build once
   try {
     const historyRes = await fetch(`${API_BASE}/history`);
     if (historyRes.ok) {
+      if (routeId !== state._routeId) return;
       const historyList = await historyRes.json();
-      const resumeItems = historyList.filter(item => {
+      allResumeItems = historyList.filter(item => {
         if (!item.durationMs || !item.positionMs) return false;
         const pct = item.positionMs / item.durationMs;
         return pct >= 0.01 && pct <= 0.95;
       });
-
-      if (resumeItems.length > 0) {
-        hasResume = true;
-        resumeContainer.innerHTML = `
-          <div class="carousel-section">
-            <h3 class="carousel-title">Resume Watching</h3>
-            <div class="grid-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px;">
-              ${resumeItems.map(item => {
-                const pct = Math.min(100, Math.round((item.positionMs / item.durationMs) * 100));
-                const displayTitle = item.title || 'Untitled';
-                const label = (item.seasonNum != null && item.episodeNum != null)
-                  ? `S${item.seasonNum}E${item.episodeNum}`
-                  : 'Movie';
-                const detailsUrl = (item.parentId && !item.parentId.startsWith('[')) ? item.parentId : (!item.id.startsWith('[') ? item.id : '');
-                const prov = item.provider || '';
-                return `
-                  <div class="media-card resume-card" style="position: relative;">
-                    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${displayTitle}">
-                    
-                    <!-- Premium watch control overlays -->
-                    <div class="resume-card-overlay">
-                      <button class="resume-action-btn play-btn" onclick="event.stopPropagation(); playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})" title="Resume Watching">
-                        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                      </button>
-                      <button class="resume-action-btn info-btn" onclick="event.stopPropagation(); if ('${detailsUrl}') window.location.hash = '#/detail?url=${encodeURIComponent(detailsUrl)}&provider=${encodeURIComponent(prov)}'; else showToast('Details URL not available');" title="Show Info">
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                      </button>
-                      <button class="resume-action-btn remove-btn" data-remove-id="${btoa(unescape(encodeURIComponent(item.id)))}" title="Remove Watch Progress">
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                      </button>
-                    </div>
-                    
-                    <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 6px; background: rgba(255,255,255,0.15);">
-                      <div style="width: ${pct}%; height: 100%; background: var(--color-colorPrimary);"></div>
-                    </div>
-                    <div class="card-info">
-                      <div class="card-title">${displayTitle}</div>
-                      <div class="card-metadata">
-                        <span>${label}</span>
-                        <span>${pct}%</span>
-                      </div>
-                    </div>
-                  </div>
-                `;
-              }).join('')}
-            </div>
-          </div>
-        `;
-
-        // Wire remove buttons via event delegation (avoids HTML-escaping issues with inline onclick)
-        resumeContainer.querySelectorAll('.remove-btn[data-remove-id]').forEach(btn => {
-          btn.addEventListener('click', e => {
-            e.stopPropagation();
-            try {
-              const id = decodeURIComponent(escape(atob(btn.dataset.removeId)));
-              removeHistoryItem(id);
-            } catch (_) {
-              showToast('Error identifying item to remove');
-            }
-          });
-        });
+      if (allResumeItems.length > 0) {
+        const resumeContainer = document.getElementById('resume-container');
+        if (resumeContainer) {
+          const resumeEl = createResumeSectionElement(allResumeItems);
+          if (resumeEl) resumeContainer.appendChild(resumeEl);
+          wireResumeRemoveButtons();
+        }
       }
     }
   } catch (err) {
     console.error('Error fetching watch history:', err);
   }
 
-  // 2. Stream homepage sections from Ktor backend
+  // 2. Stream homepage sections from Ktor backend — append incrementally
   try {
     const providerQuery = state.activeProvider
       ? `?provider=${encodeURIComponent(state.activeProvider)}`
@@ -460,6 +628,7 @@ async function renderHome() {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      if (routeId !== state._routeId) return; // bail if navigated away
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
@@ -470,27 +639,14 @@ async function renderHome() {
         try {
           const section = JSON.parse(line);
           if (section.items && section.items.length > 0) {
-            hasSections = true;
-            const sectionDiv = document.createElement('div');
-            sectionDiv.className = 'carousel-section';
-            sectionDiv.innerHTML = `
-              <h3 class="carousel-title">${section.name} <span class="section-provider">${section.provider}</span></h3>
-              <div class="grid-container">
-                ${section.items.map(item => `
-                  <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-                    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
-                    <div class="card-info">
-                      <div class="card-title">${item.name}</div>
-                      <div class="card-metadata">
-                        <span>${item.type || 'Media'}</span>
-                        ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
-                      </div>
-                    </div>
-                  </div>
-                `).join('')}
-              </div>
-            `;
-            sectionsContainer.appendChild(sectionDiv);
+            allSections.push(section);
+            if (routeId !== state._routeId) return;
+            // Append the new section directly to the DOM
+            const el = createHomeSectionElement(section);
+            if (el) {
+              sectionsContainer.appendChild(el);
+              hasSections = true;
+            }
           }
         } catch (err) {
           console.error('Failed to parse home section JSON line:', err);
@@ -501,7 +657,7 @@ async function renderHome() {
     console.error('Failed to stream homepage sections:', err);
   } finally {
     spinner.remove();
-    if (!hasResume && !hasSections) {
+    if (!hasSections && allResumeItems.length === 0) {
       sectionsContainer.innerHTML = '<div class="loading">No homepage content is available. Try searching.</div>';
     }
   }
@@ -515,7 +671,11 @@ async function removeHistoryItem(id) {
     });
     if (res.ok) {
       showToast('Removed from history');
-      renderHome(); // Re-render Home view to update the feed
+      if (window.location.hash.startsWith('#/history')) {
+        renderHistory();
+      } else {
+        renderHome();
+      }
     } else {
       showToast('Failed to remove item');
     }
@@ -524,62 +684,196 @@ async function removeHistoryItem(id) {
   }
 }
 
+// Batch-append result cards to the search grid (used during streaming)
+function appendSearchResults(grid, items) {
+  if (!grid || items.length === 0) return;
+  const fragment = document.createDocumentFragment();
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'media-card';
+    card.dataset.searchUrl = item.url;
+    card.dataset.searchApi = item.apiName;
+    card.innerHTML = `
+      <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+      <div class="card-info">
+        <div class="card-title">${item.name}</div>
+        <div class="card-metadata">
+          <span>${item.type || 'Media'}</span>
+          ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
+        </div>
+      </div>
+    `;
+    card.addEventListener('click', () => {
+      window.location.hash = `#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}`;
+    });
+    fragment.appendChild(card);
+  });
+  grid.appendChild(fragment);
+}
+
+// Create a single media card element for search results (used in filter rebuilds)
+function createSearchCard(item) {
+  const card = document.createElement('div');
+  card.className = 'media-card';
+  card.innerHTML = `
+    <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
+    <div class="card-info">
+      <div class="card-title">${item.name}</div>
+      <div class="card-metadata">
+        <span>${item.type || 'Media'}</span>
+        ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
+      </div>
+    </div>
+  `;
+  card.addEventListener('click', () => {
+    window.location.hash = `#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}`;
+  });
+  return card;
+}
+
 async function renderSearch() {
+  const routeId = state._routeId;
   const outlet = document.getElementById('view-outlet');
   outlet.innerHTML = `
     <div class="search-container">
       <input type="text" class="search-input" id="search-box" placeholder="Search movies, shows, or anime..." />
       <button class="btn btn-primary" id="search-btn">Search</button>
     </div>
+    <div id="search-filters-bar"></div>
     <div id="search-results"></div>
   `;
 
   const searchBox = document.getElementById('search-box');
   const searchBtn = document.getElementById('search-btn');
+  const resultsArea = document.getElementById('search-results');
+
+  let allResults = [];
+  let rafPending = null;
+  let pendingCards = [];
+
+  // Debounced append — batches cards and appends in next rAF
+  const scheduleAppend = (items) => {
+    pendingCards.push(...items);
+    if (rafPending) return;
+    rafPending = requestAnimationFrame(() => {
+      rafPending = null;
+      if (routeId !== state._routeId) return;
+      const grid = document.getElementById('search-grid-results');
+      if (grid && pendingCards.length > 0) {
+        appendSearchResults(grid, pendingCards);
+        pendingCards = [];
+      }
+    });
+  };
+
+  // Full grid rebuild — used only when filters change
+  const rebuildGrid = () => {
+    if (routeId !== state._routeId) return;
+    const grid = document.getElementById('search-grid-results');
+    if (!grid) return;
+    const filtered = allResults.filter(item => itemMatchesFilters(item, state.activeFilters));
+    if (filtered.length === 0) {
+      if (document.getElementById('search-loading-notice')) {
+        grid.innerHTML = '';
+      } else {
+        grid.innerHTML = '<div class="loading">No results found matching current filters.</div>';
+      }
+    } else {
+      grid.innerHTML = '';
+      const fragment = document.createDocumentFragment();
+      filtered.forEach(item => fragment.appendChild(createSearchCard(item)));
+      grid.appendChild(fragment);
+    }
+  };
+
+  renderFilterBar('search-filters-bar', rebuildGrid);
 
   const executeSearch = async () => {
     const q = searchBox.value.trim();
     if (!q) return;
-    const resultsArea = document.getElementById('search-results');
-    resultsArea.innerHTML = '<div class="loading">Searching...</div>';
+    // Cancel any pending debounced append from previous search
+    if (rafPending) { cancelAnimationFrame(rafPending); rafPending = null; }
+    pendingCards = [];
+    
+    resultsArea.innerHTML = `
+      <div class="provider-failures-container" style="display:flex; flex-direction:column; gap:4px; margin-bottom:12px;"></div>
+      <div class="grid-container" id="search-grid-results"></div>
+      <div id="search-loading-notice" class="loading">Searching...</div>
+    `;
+
+    const grid = document.getElementById('search-grid-results');
+    const failuresContainer = resultsArea.querySelector('.provider-failures-container');
+    const loadingNotice = document.getElementById('search-loading-notice');
+
+    allResults = [];
 
     try {
-      const url = `${API_BASE}/search?q=${encodeURIComponent(q)}${state.activeProvider ? `&provider=${encodeURIComponent(state.activeProvider)}` : ''}&diagnostics=true`;
+      const url = `${API_BASE}/search?q=${encodeURIComponent(q)}${state.activeProvider ? `&provider=${encodeURIComponent(state.activeProvider)}` : ''}`;
       const res = await fetch(url);
-      const payload = await res.json();
-      const results = Array.isArray(payload) ? payload : (payload.results || []);
-      const failures = Array.isArray(payload) ? [] : (payload.failures || []);
-      const failureNotice = failures.length ? `<div class="provider-failure-notice"><strong>Some providers were unavailable</strong>${failures.slice(0, 8).map(f => {
-        const provider = state.providers.find(item => item.name === f.provider);
-        const action = f.code === 'CHALLENGE_REQUIRED' && provider?.url
-          ? ` <a href="#/challenge?url=${encodeURIComponent(provider.url)}">Open browser challenge</a>`
-          : '';
-        return `<span>${f.provider}: ${f.message}${action}</span>`;
-      }).join('')}</div>` : '';
+      if (!res.body) throw new Error('ReadableStream not supported');
 
-      if (results.length === 0) {
-        resultsArea.innerHTML = `${failureNotice}<div class="loading">No results found.</div>`;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (routeId !== state._routeId) return;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // Keep incomplete line
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const providerResult = JSON.parse(line);
+            if (providerResult.results && providerResult.results.length > 0) {
+              allResults = allResults.concat(providerResult.results);
+              // Debounced incremental append
+              scheduleAppend(providerResult.results);
+            }
+            if (providerResult.failure) {
+              const f = providerResult.failure;
+              const provider = state.providers.find(item => item.name === f.provider);
+              const action = f.code === 'CHALLENGE_REQUIRED' && provider?.url
+                ? ` <a href="#/challenge?url=${encodeURIComponent(provider.url)}">Open browser challenge</a>`
+                : '';
+              
+              const failSpan = document.createElement('span');
+              failSpan.className = 'provider-failure-notice';
+              failSpan.style.display = 'block';
+              failSpan.innerHTML = `<strong>${f.provider}:</strong> ${f.message}${action}`;
+              failuresContainer.appendChild(failSpan);
+            }
+          } catch (err) {
+            console.error('Failed to parse search result JSON line:', err);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error during search execution:', e);
+      if (allResults.length === 0) {
+        resultsArea.innerHTML = '<div class="loading">Error performing search.</div>';
         return;
       }
-
-      resultsArea.innerHTML = `${failureNotice}
-        <div class="grid-container">
-          ${results.map(item => `
-            <div class="media-card" onclick="window.location.hash = '#/detail?url=${encodeURIComponent(item.url)}&provider=${encodeURIComponent(item.apiName)}'">
-              <img class="card-poster" src="${proxyImage(item.posterUrl)}" alt="${item.name}">
-              <div class="card-info">
-                <div class="card-title">${item.name}</div>
-                <div class="card-metadata">
-                  <span>${item.type || 'Media'}</span>
-                  ${item.score ? `<span class="rating-badge">★ ${item.score.toFixed(1)}</span>` : ''}
-                </div>
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      `;
-    } catch (e) {
-      resultsArea.innerHTML = '<div class="loading">Error performing search.</div>';
+    } finally {
+      // Flush any remaining pending cards
+      if (rafPending) { cancelAnimationFrame(rafPending); rafPending = null; }
+      if (routeId !== state._routeId) return;
+      if (pendingCards.length > 0) {
+        const gridNow = document.getElementById('search-grid-results');
+        if (gridNow) appendSearchResults(gridNow, pendingCards);
+        pendingCards = [];
+      }
+      if (loadingNotice && document.getElementById('search-loading-notice')) {
+        loadingNotice.remove();
+      }
+      if (allResults.length === 0) {
+        const gridNow = document.getElementById('search-grid-results');
+        if (gridNow) gridNow.innerHTML = '<div class="loading">No results found.</div>';
+      }
     }
   };
 
@@ -1434,41 +1728,75 @@ async function deleteDownload(id) {
 
 async function renderHistory() {
   const outlet = document.getElementById('view-outlet');
-  outlet.innerHTML = '<div class="loading">Loading History...</div>';
+  outlet.innerHTML = `
+    <div id="history-filters-bar"></div>
+    <div id="history-items-container"></div>
+  `;
+  const container = document.getElementById('history-items-container');
+  container.innerHTML = '<div class="loading">Loading History...</div>';
+
   try {
     const res = await fetch(`${API_BASE}/history`);
     const historyList = await res.json();
-    if (historyList.length === 0) {
-      outlet.innerHTML = '<div class="loading">No watch history found.</div>';
-      return;
-    }
-
-    outlet.innerHTML = `
-      <div style="max-height: 600px; overflow-y: auto;">
-        ${historyList.map(item => {
-          const displayTitle = item.title || 'Untitled';
-          const prov = item.provider || '';
-          const timeStr = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : 'Recently';
-          const pct = item.durationMs ? Math.round((item.positionMs / item.durationMs) * 100) : 0;
-          return `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:16px; border-bottom:1px solid rgba(255,255,255,0.03);">
-              <div>
-                <div style="font-weight:600;">${displayTitle}</div>
-                <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">
-                  Played via ${prov} on ${timeStr} · ${pct}% watched
+    
+    const updateHistoryList = () => {
+      const filteredList = historyList.filter(item => {
+        const itemWithNormalizedType = {
+          ...item,
+          type: item.type || (item.seasonNum !== null && item.seasonNum !== undefined ? 'TvSeries' : 'Movie')
+        };
+        return itemMatchesFilters(itemWithNormalizedType, state.activeFilters);
+      });
+      
+      if (filteredList.length === 0) {
+        container.innerHTML = '<div class="loading">No history found matching current filters.</div>';
+        return;
+      }
+      
+      container.innerHTML = `
+        <div style="max-height: 600px; overflow-y: auto;">
+          ${filteredList.map(item => {
+            const displayTitle = item.title || 'Untitled';
+            const prov = item.provider || '';
+            const timeStr = item.updatedAt ? new Date(item.updatedAt).toLocaleString() : 'Recently';
+            const pct = item.durationMs ? Math.round((item.positionMs / item.durationMs) * 100) : 0;
+            return `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:16px; border-bottom:1px solid rgba(255,255,255,0.03);">
+                <div>
+                  <div style="font-weight:600;">${displayTitle}</div>
+                  <div style="font-size:12px; color:var(--color-grayTextColor); margin-top:4px;">
+                    Played via ${prov} on ${timeStr} · ${pct}% watched
+                  </div>
+                </div>
+                <div style="display:flex; gap:12px; align-items:center;">
+                  <button class="btn" style="padding: 8px 16px; font-size:14px; background:var(--color-colorPrimary);" 
+                          onclick="playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})">
+                    Replay
+                  </button>
+                  <button class="btn" style="padding: 8px; background: rgba(255,77,77,0.15); color: #ff4d4d; border: 1px solid rgba(255,77,77,0.3); display: flex; align-items: center; justify-content: center; border-radius: 6px; cursor: pointer; transition: all 0.2s;" 
+                          onmouseover="this.style.background='#ff4d4d'; this.style.color='#fff';" 
+                          onmouseout="this.style.background='rgba(255,77,77,0.15)'; this.style.color='#ff4d4d';"
+                          onclick="removeHistoryItem('${escAttr(item.id)}')">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      <line x1="10" y1="11" x2="10" y2="17"></line>
+                      <line x1="14" y1="11" x2="14" y2="17"></line>
+                    </svg>
+                  </button>
                 </div>
               </div>
-              <button class="btn" style="padding: 8px 16px; font-size:14px; background:var(--color-colorPrimary);" 
-                      onclick="playMedia('${escAttr(item.id)}', '${escAttr(prov)}', '${escAttr(displayTitle)}', '${escAttr(item.parentId || '')}', '${escAttr(item.posterUrl || '')}', ${item.seasonNum !== null ? item.seasonNum : 'null'}, ${item.episodeNum !== null ? item.episodeNum : 'null'})">
-                Replay
-              </button>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    `;
+            `;
+          }).join('')}
+        </div>
+      `;
+    };
+    
+    renderFilterBar('history-filters-bar', updateHistoryList);
+    updateHistoryList();
+    
   } catch (e) {
-    outlet.innerHTML = '<div class="loading">Failed to load watch history.</div>';
+    container.innerHTML = '<div class="loading">Failed to load watch history.</div>';
   }
 }
 
@@ -1969,3 +2297,4 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
 window.addEventListener('DOMContentLoaded', init);
 window.playMedia = playMedia;
 window.deleteDownload = deleteDownload;
+window.removeHistoryItem = removeHistoryItem;
