@@ -35,6 +35,8 @@ object CookieJarManager {
         val cookieHeader: String,
         /** User-Agent that was used when solving, may be null */
         val userAgent: String? = null,
+        /** The original URL that was used to solve the challenge, for proactive warmup */
+        val sourceUrl: String? = null,
         /** When this entry was created/applied (epoch ms) */
         val createdAt: Long = System.currentTimeMillis(),
         /** Time-to-live in ms, defaults to 15 minutes */
@@ -91,12 +93,15 @@ object CookieJarManager {
      * Store cookies for a specific host.
      */
     @Synchronized
-    fun setCookies(host: String, cookieHeader: String, userAgent: String? = null, ttlMs: Long = DEFAULT_TTL_MS) {
+    fun setCookies(host: String, cookieHeader: String, userAgent: String? = null, sourceUrl: String? = null, ttlMs: Long = DEFAULT_TTL_MS) {
         if (cookieHeader.isBlank()) return
         val normalized = normalizeHost(host)
+        // Preserve any existing sourceUrl if not provided (e.g., when re-saving)
+        val resolvedSourceUrl = sourceUrl ?: cookies[normalized]?.sourceUrl
         cookies[normalized] = CookieJarEntry(
             cookieHeader = cookieHeader,
             userAgent = userAgent,
+            sourceUrl = resolvedSourceUrl,
             ttlMs = ttlMs
         )
         Log.i(TAG, "Stored cookies for $normalized")
