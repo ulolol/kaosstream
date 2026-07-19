@@ -15,6 +15,7 @@ import com.lagradost.cloudstream3.server.storage.WatchProgressData
 import com.lagradost.cloudstream3.server.storage.ServerDownloadManager
 import com.lagradost.cloudstream3.server.challenge.ChallengeClient
 import com.lagradost.cloudstream3.network.ChallengeCookieStore
+import com.lagradost.cloudstream3.network.CloudflareKillerJvm
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -347,6 +348,17 @@ fun main() {
     // Initialize context and DB directories
     ServerContext.init()
     DatabaseHelper.init(ServerContext.dbFile)
+    
+    // Initialize per-domain cookie jar with file persistence
+    ChallengeCookieStore.init(ServerContext.configDir)
+    
+    // Wire CloudflareKillerJvm interceptor into the app's HTTP client
+    // This auto-detects Cloudflare challenges and solves them per-domain
+    com.lagradost.cloudstream3.app.baseClient = com.lagradost.cloudstream3.app.baseClient.newBuilder()
+        .addInterceptor(CloudflareKillerJvm())
+        .build()
+    
+    Log.i("Application", "CookieJarManager initialized, CloudflareKillerJvm interceptor wired")
     
     // Initialise all built-in providers
     APIHolder.initAll()
