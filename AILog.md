@@ -218,3 +218,12 @@
   - Configured `movflags` with `fragmented+empty_moov+default_base_moof+frag_keyframe` via `libav.av_opt_set` to support streaming chunks.
   - Added a robust update end queue (`writeQueue`) to prevent `SourceBuffer` append failures during active updates.
   - Integrated proper packet deallocation (`libav.av_packet_unref` and `libav.av_packet_free`) to prevent client-side memory leaks.
+
+### 23. iOS/Safari Playback Watchdog and MSE Transcode Fallback
+- **Problem**: Certain stream loads on iOS/iPadOS Safari hang silently, get blocked by CORS, or hit connection failures, causing the video element to stall indefinitely in a loading state without triggering a standard 'error' event. Additionally, direct backend transcode URLs fail to load properly on Safari.
+- **Solution**:
+  - Implemented a playback watchdog timer (`startWatchdog` / `clearWatchdog` in [app.js](file:///home/kaos/Documents/cloudstream/server/web/js/app.js)) that triggers 4.5 seconds after a play request if the video's `readyState` remains below `3` (meaning not enough data is loaded to play).
+  - The watchdog automatically falls back to backend transcoding when triggered.
+  - Implemented `playTranscodeStreamViaMse` utilizing `MediaSource` and a fetch body stream reader to read and append the transcode stream chunks into a browser-supported `SourceBuffer` container (`video/mp4; codecs="avc1.640028, mp4a.40.2"`).
+  - Modified `fallbackToBackendTranscode` to detect Safari/iPadOS using navigator userAgent/platform matching, automatically routing transcoding via the MSE chunk reader.
+  - Rebuilt assets and verified the output `index.html` references the updated Vite bundle `main-BY51kmKV.js`.

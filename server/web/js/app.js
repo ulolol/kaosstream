@@ -1176,7 +1176,42 @@ function renderPlayer() {
     initiateWasmPlayback(video, streamUrl, route, subtitles, selectedSource);
   }
 
+  // Playback watchdog timer to handle silent loads, CORS blocks, or connection hangs
+  let watchdog = null;
+  const startWatchdog = () => {
+    if (watchdog) return;
+    watchdog = setTimeout(() => {
+      if (video.readyState < 3) {
+        serverLog("WARN", "PlayerWatchdog", `Playback did not start 4.5s after play trigger (readyState: ${video.readyState}). Triggering backend transcode fallback.`);
+        fallbackToBackendTranscode(video, streamUrl, route, selectedSource);
+      }
+    }, 4500);
+  };
+
+  const clearWatchdog = () => {
+    if (watchdog) {
+      serverLog("INFO", "PlayerWatchdog", `Playback successfully started (readyState: ${video.readyState}). Watchdog cleared.`);
+      clearTimeout(watchdog);
+      watchdog = null;
+    }
+  };
+
+  video.addEventListener('play', startWatchdog);
+  video.addEventListener('playing', clearWatchdog);
+  video.addEventListener('canplay', clearWatchdog);
+  video.addEventListener('timeupdate', () => {
+    if (video.currentTime > 0) {
+      clearWatchdog();
+    }
+  });
+
+  if (!video.paused) {
+    startWatchdog();
+  }
+
   video.addEventListener('error', () => {
+    clearTimeout(watchdog);
+    watchdog = null;
     if (fallbackToBackendTranscode(video, streamUrl, route, selectedSource)) return;
     const message = 'This source is not browser-compatible. iPad supports MP4/HLS, but this source may be MKV or use an unsupported codec.';
     showToast(message);
@@ -1588,12 +1623,75 @@ function getBackendTranscodeUrl(streamUrl, route, source) {
     `&supportedAudioCodecs=${encodeURIComponent(supportedAudios)}`;
 }
 
+function playTranscodeStreamViaMse(videoElement, transcodeUrl) {
+  const mediaSource = new MediaSource();
+  videoElement.src = URL.createObjectURL(mediaSource);
+  videoElement.load();
+
+  mediaSource.addEventListener('sourceopen', async () => {
+    try {
+      const mimeType = 'video/mp4; codecs="avc1.640028, mp4a.40.2"';
+      const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+
+      const writeQueue = [];
+      function appendToSourceBuffer(buffer) {
+        if (sourceBuffer.updating) {
+          writeQueue.push(buffer);
+        } else {
+          sourceBuffer.appendBuffer(buffer);
+        }
+      }
+
+      sourceBuffer.addEventListener('updateend', () => {
+        if (writeQueue.length > 0 && !sourceBuffer.updating) {
+          sourceBuffer.appendBuffer(writeQueue.shift());
+        }
+      });
+
+      const response = await fetch(transcodeUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const reader = response.body.getReader();
+
+      videoElement.addEventListener('emptied', () => {
+        try { reader.cancel(); } catch(_) {}
+      }, { once: true });
+
+      while (mediaSource.readyState === 'open') {
+        const { done, value } = await reader.read();
+        if (done) {
+          if (mediaSource.readyState === 'open') {
+            mediaSource.endOfStream();
+          }
+          break;
+        }
+        appendToSourceBuffer(value);
+      }
+    } catch (err) {
+      console.error("[Transcode MSE Error]", err);
+      serverLog("ERROR", "TranscodeMse", `Stream reader error: ${err.message || err}`);
+    }
+  });
+}
+
 function fallbackToBackendTranscode(videoElement, streamUrl, route, source) {
   if (videoElement.dataset.backendTranscodeAttempted === 'true') return false;
   videoElement.dataset.backendTranscodeAttempted = 'true';
   showToast('Browser playback failed. Starting server-side remux/transcode...');
-  videoElement.src = getBackendTranscodeUrl(streamUrl, route, source);
-  videoElement.load();
+  
+  const transcodeUrl = getBackendTranscodeUrl(streamUrl, route, source);
+  
+  const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                   /iPad|iPhone|iPod/.test(navigator.platform) ||
+                   (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  if (isSafari) {
+    playTranscodeStreamViaMse(videoElement, transcodeUrl);
+  } else {
+    videoElement.src = transcodeUrl;
+    videoElement.load();
+  }
   return true;
 }
 
