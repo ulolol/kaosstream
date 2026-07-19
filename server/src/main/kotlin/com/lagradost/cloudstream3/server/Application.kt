@@ -367,10 +367,112 @@ fun main() {
     // Load dynamic plugins
     ServerPluginManager.loadAllPlugins(ServerContext.pluginsDir)
     
+    // Start proactive cookie warmup in background
+    startCookieWarmup()
+    
     Log.i("Application", "Starting server on port $port...")
     embeddedServer(Netty, port = port) {
         module()
     }.start(wait = true)
+}
+
+/**
+ * Background thread that proactively re-solves Cloudflare challenges
+ * before cookies expire. Runs every 5 minutes.
+ *
+ * For each stored cookie entry that is >50% through its TTL and has
+ * a sourceUrl, triggers a re-solve so fresh cookies are ready before
+ * the old ones expire. This avoids 403 errors during regular requests.
+ */
+private fun startCookieWarmup() {
+    thread(name = "cookie-warmup", isDaemon = true) {
+        val checkIntervalMs = 5 * 60 * 1000L // every 5 minutes
+        while (true) {
+            try {
+                Thread.sleep(checkIntervalMs)
+                val now = System.currentTimeMillis()
+                var warmed = 0
+
+                for (host in CookieJarManager.getHosts()) {
+                    val entry = CookieJarManager.getEntry(host) ?: continue
+                    val age = now - entry.createdAt
+                    val ttl = entry.ttlMs
+                    // Re-solve if >50% through TTL and we know the source URL
+                    if (ttl > 0 && age > ttl / 2 && !entry.sourceUrl.isNullOrBlank()) {
+                        Log.i("CookieWarmup", "Proactively re-solving for $host (age=${age/1000}s, TTL=${ttl/1000}s)")
+                        if (warmupSolve(host, entry.sourceUrl!!, entry.userAgent)) {
+                            warmed++
+                        }
+                    }
+                }
+
+                if (warmed > 0) {
+                    Log.i("CookieWarmup", "Proactively warmed $warmed cookie(s)")
+                }
+            } catch (e: InterruptedException) {
+                break
+            } catch (e: Exception) {
+                Log.e("CookieWarmup", "Warmup cycle failed: ${e.message}")
+            }
+        }
+    }
+}
+
+/**
+ * Solve a Cloudflare challenge for warmup purposes.
+ * Direct HTTP to challenge-browser, storing results in CookieJarManager.
+ */
+private fun warmupSolve(host: String, sourceUrl: String, userAgent: String?): Boolean {
+    return try {
+        val baseUrl = (System.getenv("CS_CHALLENGE_URL") ?: "http://challenge-browser:3210").trimEnd('/')
+        val uaPart = userAgent?.let { "\"${it.replace("\"", "\\\"")}\"" } ?: "null"
+        val startPayload = "{\"url\":\"${sourceUrl.replace("\"", "\\\"")}\",\"userAgent\":$uaPart}"
+
+        val connection = URL("$baseUrl/sessions").openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 60_000
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.outputStream.use { it.write(startPayload.encodeToByteArray()) }
+
+        val startBody = connection.inputStream?.bufferedReader()?.use { it.readText() } ?: return false
+        val sessionId = Regex("\"id\":\"([^\"]+)").find(startBody)?.groupValues?.get(1) ?: return false
+
+        // Poll for completion (up to 60 seconds)
+        val deadline = System.currentTimeMillis() + 60_000L
+        while (System.currentTimeMillis() < deadline) {
+            Thread.sleep(1000)
+            val statusConn = URL("$baseUrl/sessions/$sessionId").openConnection() as HttpURLConnection
+            statusConn.connectTimeout = 10_000
+            statusConn.readTimeout = 10_000
+            val statusBody = statusConn.inputStream?.bufferedReader()?.use { it.readText() } ?: continue
+
+            if (statusBody.contains("\"status\":\"ready\"")) {
+                val cookiesConn = URL("$baseUrl/sessions/$sessionId/cookies").openConnection() as HttpURLConnection
+                cookiesConn.connectTimeout = 10_000
+                cookiesConn.readTimeout = 10_000
+                val cookiesJson = cookiesConn.inputStream?.bufferedReader()?.use { it.readText() } ?: return false
+
+                val cookieHeader = Regex("\"name\":\"([^\"]+)\",\"value\":\"([^\"]*)")
+                    .findAll(cookiesJson)
+                    .joinToString("; ") { "${it.groupValues[1]}=${it.groupValues[2]}" }
+
+                if (cookieHeader.isNotBlank()) {
+                    val resolvedUserAgent = Regex("\"userAgent\":\"([^\"]+)")
+                        .find(statusBody)?.groupValues?.get(1)
+                    CookieJarManager.setCookies(host, cookieHeader, resolvedUserAgent, sourceUrl)
+                    return true
+                }
+                return false
+            }
+        }
+        Log.w("CookieWarmup", "Warmup timed out for $host")
+        false
+    } catch (e: Exception) {
+        Log.e("CookieWarmup", "Warmup failed for $host: ${e.message}")
+        false
+    }
 }
 
 fun Application.module() {
