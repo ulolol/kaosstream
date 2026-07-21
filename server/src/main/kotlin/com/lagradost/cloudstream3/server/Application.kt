@@ -52,7 +52,15 @@ import java.net.URL
 import java.util.Collections
 
 @Serializable
-private data class ProbeStream(val codec_type: String, val codec_name: String? = null, val profile: String? = null, val level: Int? = null, val codec_tag_string: String? = null)
+private data class ProbeStream(
+    val codec_type: String,
+    val codec_name: String? = null,
+    val profile: String? = null,
+    val level: Int? = null,
+    val codec_tag_string: String? = null,
+    val index: Int? = null,
+    val tags: Map<String, String>? = null
+)
 
 private fun ProbeStream.toIsoCodecString(): String? {
     val name = codec_name?.lowercase() ?: return null
@@ -993,6 +1001,37 @@ fun Application.module() {
                 }
             }
             
+            fun resolveToAbsoluteUrl(urlStr: String, baseUri: java.net.URI?, fallbackUrl: String): String {
+                return if (baseUri != null) {
+                    try {
+                        baseUri.resolve(urlStr).toString()
+                    } catch (e: Exception) {
+                        if (urlStr.startsWith("http://") || urlStr.startsWith("https://")) {
+                            urlStr
+                        } else {
+                            val baseWithoutPath = fallbackUrl.substringBeforeLast("/")
+                            "$baseWithoutPath/$urlStr"
+                        }
+                    }
+                } else {
+                    urlStr
+                }
+            }
+
+            fun rewriteM3u8Uri(line: String, baseUri: java.net.URI?, targetUrl: String, refererParam: String): String {
+                val uriPattern = Regex("""URI="([^"]*)"""")
+                return uriPattern.replace(line) { match ->
+                    val originalUri = match.groupValues[1]
+                    if (originalUri.isNotBlank()) {
+                        val absoluteUrl = resolveToAbsoluteUrl(originalUri, baseUri, targetUrl)
+                        val encodedUrl = java.net.URLEncoder.encode(absoluteUrl, "UTF-8")
+                        """URI="/api/v1/proxy?url=$encodedUrl$refererParam""""
+                    } else {
+                        match.value
+                    }
+                }
+            }
+
             if (isM3u8) {
                 val m3u8Content = connection.inputStream.use { it.bufferedReader().readText() }
                 val baseUri = try { java.net.URI(targetUrl) } catch (e: Exception) { null }
@@ -1000,23 +1039,14 @@ fun Application.module() {
                 
                 val rewrittenContent = m3u8Content.lineSequence().map { line ->
                     val trimmed = line.trim()
-                    if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    if (trimmed.isEmpty()) {
+                        line
+                    } else if (trimmed.startsWith("#EXT-X-MEDIA:") && trimmed.contains("URI=\"")) {
+                        rewriteM3u8Uri(trimmed, baseUri, targetUrl, refererParam)
+                    } else if (trimmed.startsWith("#EXT-X-STREAM-INF:") || trimmed.startsWith("#")) {
                         line
                     } else {
-                        val absoluteUrl = if (baseUri != null) {
-                            try {
-                                baseUri.resolve(trimmed).toString()
-                            } catch (e: Exception) {
-                                if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-                                    trimmed
-                                } else {
-                                    val baseWithoutPath = targetUrl.substringBeforeLast("/")
-                                    "$baseWithoutPath/$trimmed"
-                                }
-                            }
-                        } else {
-                            trimmed
-                        }
+                        val absoluteUrl = resolveToAbsoluteUrl(trimmed, baseUri, targetUrl)
                         "/api/v1/proxy?url=${java.net.URLEncoder.encode(absoluteUrl, "UTF-8")}$refererParam"
                     }
                 }.joinToString("\n")
@@ -1038,6 +1068,7 @@ fun Application.module() {
             val requestedUrl = call.request.queryParameters["url"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing url")
             Log.i("Transcode", "Received request: url=${requestedUrl.take(80)}...")
             val referer = call.request.queryParameters["referer"] ?: ""
+            val audioIndex = call.request.queryParameters["audioIndex"]?.toIntOrNull()?.coerceAtLeast(0) ?: 0
 
             // We try two URLs in order:
             // 1. Direct upstream: if the URL wraps our proxy, extract the inner URL
@@ -1133,9 +1164,10 @@ fun Application.module() {
                 Log.w("Transcode", "ffprobe failed on all URLs — trying blind transcode with full re-encode")
                 val probeUrl = chosenUrl ?: proxyUrl
                 command.addAll(listOf("-user_agent", userAgent, "-i", probeUrl))
+                command.addAll(listOf("-map", "0:v:0", "-map", "0:$audioIndex"))
                 val hasVaapi = java.io.File("/dev/dri/renderD128").exists()
                 if (hasVaapi) {
-                    Log.i("Transcode", "Blind route: VAAPI h264 + AAC")
+                    Log.i("Transcode", "Blind route: VAAPI h264 + AAC (audioIndex=$audioIndex)")
                     command.addAll(listOf("-c:v", "h264_vaapi", "-c:a", "aac", "-b:a", "128k"))
                 } else {
                     Log.i("Transcode", "Blind route: Software libx264 + AAC")
@@ -1167,6 +1199,8 @@ fun Application.module() {
                     command.addAll(listOf("-headers", extraHeaders))
                 }
                 command.addAll(listOf("-user_agent", userAgent, "-i", chosenUrl!!))
+                command.addAll(listOf("-map", "0:v:0", "-map", "0:$audioIndex"))
+                Log.i("Transcode", "Selected audio stream index: $audioIndex")
 
                 if (transcodeVideo) {
                     val hasVaapi = java.io.File("/dev/dri/renderD128").exists()
@@ -1253,6 +1287,44 @@ fun Application.module() {
             } finally {
                 process.destroy()
             }
+        }
+        
+        // --- 6.5 Audio stream probe ---
+        get("/api/v1/probe") {
+            val requestedUrl = call.request.queryParameters["url"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing url")
+            val referer = call.request.queryParameters["referer"] ?: ""
+            Log.i("Probe", "Probing: url=${requestedUrl.take(80)}...")
+
+            val targetUrl = if (requestedUrl.startsWith("http")) requestedUrl
+                else "http://127.0.0.1:${System.getenv("CS_PORT")?.toIntOrNull() ?: 2106}$requestedUrl"
+
+            val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            val extraHeaders = if (referer.isNotBlank()) "Referer: $referer\r\n" else ""
+
+            val cmd = mutableListOf("ffprobe", "-v", "quiet", "-print_format", "json",
+                "-show_streams", "-user_agent", userAgent, "-headers", "${extraHeaders}Range: bytes=0-1048576\r\n", targetUrl)
+
+            val audioStreams = mutableListOf<Map<String, String?>>()
+            try {
+                val p = ProcessBuilder(cmd).start()
+                val out = p.inputStream.bufferedReader().use { it.readText() }
+                p.waitFor()
+                val json = Json { ignoreUnknownKeys = true }
+                val result = json.decodeFromString<ProbeResult>(out)
+                result.streams?.filter { it.codec_type == "audio" }?.forEach { stream ->
+                    audioStreams.add(mapOf(
+                        "index" to stream.index?.toString(),
+                        "codec" to stream.codec_name,
+                        "language" to (stream.tags?.get("language") ?: ""),
+                        "title" to (stream.tags?.get("title") ?: "")
+                    ))
+                }
+            } catch (e: Throwable) {
+                Log.w("Probe", "Probe failed: ${e.message}")
+            }
+
+            Log.i("Probe", "Found ${audioStreams.size} audio streams")
+            call.respond(mapOf("audioStreams" to audioStreams))
         }
         
         // --- 7. Bookmarks ---

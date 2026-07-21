@@ -702,7 +702,9 @@ body {
   background: rgba(12, 12, 14, 0.72);
   backdrop-filter: blur(8px);
   cursor: pointer;
-  font: 600 13px Outfit, sans-serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   will-change: transform;
   transition: transform 0.2s ease, background 0.2s ease;
 }
@@ -716,7 +718,9 @@ body {
 .player-play-control {
   width: 64px;
   height: 64px;
-  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .player-toolbar {

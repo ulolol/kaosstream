@@ -30,12 +30,30 @@ async function inspect(session) {
   const title = await session.page.title().catch(() => '') || '';
   const text = await session.page.locator('body').innerText().catch(() => '') || '';
   
-  // If the page is still in transition / completely empty, keep it pending
+  // If the page is still in transition / completely empty, check cookies for completion signal
   if (!text && !title) {
-    session.challenge = true;
-    session.status = 'pending';
+    const cookies = await session.context.cookies();
+    const hasCfClearance = cookies.some(c => c.name === 'cf_clearance');
+    session.challenge = !hasCfClearance;
+    session.status = hasCfClearance ? 'ready' : 'pending';
     session.url = session.page.url();
-    session.title = 'Loading...';
+    session.title = hasCfClearance ? 'Challenge solved' : 'Loading...';
+    if (hasCfClearance && !session.cleanupStarted) {
+      session.cleanupStarted = true;
+      setTimeout(async () => {
+        try {
+          console.log(`[Session] Cleaning up completed session: ${session.id}`);
+          sessions.delete(session.id);
+          await session.context.close().catch(() => {});
+          const fs = require('fs');
+          if (session.profileDir) {
+            fs.rmSync(session.profileDir, { recursive: true, force: true });
+          }
+        } catch (err) {
+          console.error(`[Session] Error during cleanup of ${session.id}:`, err);
+        }
+      }, 60000);
+    }
     return;
   }
   

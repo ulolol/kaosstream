@@ -240,7 +240,9 @@ function showChallengeModal(sessionId) {
             The server encountered a browser challenge. Please click on the Turnstile checkbox below to verify.
           </p>
         </div>
-        <button id="challenge-modal-close" style="background: none; border: none; color: #fff; font-size: 28px; cursor: pointer; padding: 0; line-height: 1;">×</button>
+        <button id="challenge-modal-close" style="background: none; border: none; color: #fff; cursor: pointer; padding: 4px;">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z"/></svg>
+        </button>
       </div>
       <div style="display: flex; flex-direction: column; align-items: center; gap: 16px; margin: 20px 0;">
         <div id="challenge-modal-status" style="font-size: 14px; font-weight: 500; width: 100%; text-align: center; color: var(--color-colorPrimary);">Initializing...</div>
@@ -1179,7 +1181,9 @@ function showSourcePicker(data, title, id, provider, parentId = '', posterUrl = 
     <section class="source-picker" role="dialog" aria-modal="true" aria-labelledby="source-picker-title">
       <div class="source-picker-header">
         <div><p class="eyebrow">Playback setup</p><h2 id="source-picker-title">Choose how to play</h2><p class="source-picker-subtitle"></p></div>
-        <button class="source-picker-close" type="button" aria-label="Close">×</button>
+        <button class="source-picker-close" type="button" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M19,6.41L17.59,5 12,10.59 6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 12,13.41 17.59,19 19,17.59 13.41,12z"/></svg>
+        </button>
       </div>
       <div class="source-picker-section"><h3>Sources</h3><div class="source-list" id="source-list"></div><div class="native-player-actions"><button class="player-toolbar-btn" type="button" id="open-vlc-btn">Open in VLC</button><button class="player-toolbar-btn" type="button" id="open-infuse-btn">Open in Infuse</button><button class="player-toolbar-btn" type="button" id="download-vlc-btn">Download VLC playlist</button></div></div>
       <div class="source-picker-section"><h3>Subtitles</h3><div class="subtitle-list" id="subtitle-list"></div></div>
@@ -1394,29 +1398,54 @@ function renderPlayer() {
         <video id="video-element" class="player-video" controls autoplay playsinline preload="metadata"></video>
         <canvas id="subtitle-canvas-overlay" class="subtitle-overlay-canvas"></canvas>
         <div class="player-center-controls">
-          <button class="player-control" id="skip-back-btn" aria-label="Skip back 10 seconds">↶ 10</button>
-          <button class="player-control player-play-control" id="play-toggle-btn" aria-label="Play or pause">▶</button>
-          <button class="player-control" id="skip-forward-btn" aria-label="Skip forward 10 seconds">10 ↷</button>
+          <button class="player-control" id="skip-back-btn" aria-label="Skip back 10 seconds">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6,6h2v12H6V6zm3.5,6l8.5,6V6l-8.5,6z"/></svg>
+          </button>
+          <button class="player-control player-play-control" id="play-toggle-btn" aria-label="Play or pause">
+            <svg class="play-icon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor"><path d="M8,5v14l11,-7z"/></svg>
+            <svg class="pause-icon" viewBox="0 0 24 24" width="28" height="28" fill="currentColor" style="display:none"><path d="M6,19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+          </button>
+          <button class="player-control" id="skip-forward-btn" aria-label="Skip forward 10 seconds">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M6,18l8.5-6L6,6v12zm10-12v12h2V6h-2z"/></svg>
+          </button>
         </div>
       </div>
       <div class="player-toolbar" aria-label="Player options">
-        <label class="player-option">Speed
+        <label class="player-option">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20.38,8.57l-1.23,1.85a8,8 0,0 1,-0.22 7.58L5.07,18A8,8 0,0 1,15.58 6.85l1.85,-1.23A10,10 0,0 0,3.35 19a2,2 0,0 0,1.72 1h13.85a2,2 0,0 0,1.74 -1,10,10 0,0 0 -0.27,-10.44zM10.59,15.41a2,2 0,0 0,2.83 0l5.66,-8.49 -8.49,5.66a2,2 0,0 0,0 2.83z"/></svg>
+          Speed
           <select id="playback-speed" aria-label="Playback speed">
             <option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option>
           </select>
         </label>
-        <label class="player-option" id="quality-option" hidden>Quality
+        <label class="player-option" id="quality-option" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21,3H3v2h18V3zM19,7H5v2h14V7zM17,11H7v2h10V11zM21,15H3v2h18V15zM5,19h14v2H5V19z"/></svg>
+          Quality
           <select id="playback-quality" aria-label="Video quality"><option value="-1">Auto</option></select>
         </label>
-        <label class="player-option" id="audio-option" hidden>Audio
+        <label class="player-option" id="audio-option" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M3,9v6h4l5,5V4L7,9H3zm13.5,3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14,3.23v2.06c2.89.86 5,3.54 5,6.71s-2.11,5.85-5,6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+          Audio
           <select id="playback-audio" aria-label="Audio track"><option value="-1">Auto</option></select>
         </label>
-        <label class="player-option" id="subtitle-option" hidden>Subtitles
+        <label class="player-option" id="subtitle-option" hidden>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M20,4H4c-1.1,0-2,.9-2,2v12c0,1.1.9,2,2,2h16c1.1,0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4,12h4v2H4v-2zm10,6H4v-2h10v2zm6,0h-4v-2h4v2zm0-4H10v-2h10v2z"/></svg>
+          Subtitles
           <select id="subtitle-select" aria-label="Subtitles"><option value="-1">Off</option></select>
         </label>
-        <button class="player-toolbar-btn" id="pip-btn" type="button">PiP</button>
-        <button class="player-toolbar-btn" id="change-source-btn" type="button">Change source</button>
-        <button class="player-toolbar-btn" id="fullscreen-btn" type="button">Fullscreen</button>
+        <button class="player-toolbar-btn" id="pip-btn" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M19,11h-8v6h8V11zM23,19V4.98C23,3.88 22.1,3 21,3H3c-1.1,0-2,.88-2,1.98V19c0,1.1.9,2,2,2h18c1.1,0 2-.9 2-2zM21,19.02H3V4.97h18v14.05z"/></svg>
+          PiP
+        </button>
+        <button class="player-toolbar-btn" id="change-source-btn" type="button">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M21,3H3c-1.1,0-2,.9-2,2v12c0,1.1.9,2,2,2h5v2h8v-2h5c1.1,0 1.99-.9 1.99-2L23,5c0-1.1-.9-2-2-2zM21,17H3V5h18V17z"/></svg>
+          Source
+        </button>
+        <button class="player-toolbar-btn" id="fullscreen-btn" type="button">
+          <svg class="fullscreen-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M7,14H5v5h5v-2H7V14zM5,10h2V7h3V5H5V10zM17,17h-3v2h5v-5h-2V17zM14,5v2h3v3h2V5H14z"/></svg>
+          <svg class="fullscreen-exit-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor" style="display:none"><path d="M5,16h3v3h2v-5H5V16zM8,8H5v2h5V5H8V8zM14,19h2v-3h3v-2h-5V19zM16,8V5h-2v5h5V8H16z"/></svg>
+          Fullscreen
+        </button>
       </div>
     </div>
   `;
@@ -1520,7 +1549,24 @@ function renderPlayer() {
         };
         if (hls.audioTracks?.length) addAudioTracks();
         hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, addAudioTracks);
-        audioSelect.addEventListener('change', () => { hls.audioTrack = Number(audioSelect.value); });
+
+        // HLS.js subtitle tracks from manifest (#EXT-X-MEDIA:TYPE=SUBTITLES)
+        const subtitleSelect = document.getElementById('subtitle-select');
+        const subtitleOption = document.getElementById('subtitle-option');
+        const setupHlsSubs = () => {
+          const hlsSubs = hls.subtitleTracks || [];
+          if (hlsSubs.length > 0) {
+            hlsSubs.forEach((track, index) => {
+              const option = document.createElement('option');
+              option.value = `hls-${index}`;
+              option.textContent = track.name || track.lang || `Subtitle ${index + 1}`;
+              subtitleSelect.appendChild(option);
+            });
+            subtitleOption.hidden = false;
+          }
+        };
+        if (hls.subtitleTracks?.length) setupHlsSubs();
+        hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, setupHlsSubs);
       });
       hls.on(Hls.Events.ERROR, (_, error) => {
         if (error.fatal) showToast('The stream could not be loaded.');
@@ -1596,14 +1642,79 @@ function renderPlayer() {
     subtitleSelect.appendChild(option);
   });
   subtitleOption.hidden = subtitles.length === 0;
+  // Watch for subtitle tracks added natively by browser HLS (Safari)
+  video.textTracks.addEventListener('addtrack', (event) => {
+    const track = event.track;
+    if ((track.kind === 'subtitles' || track.kind === 'captions') && track.label) {
+      const alreadyInDropdown = [...subtitleSelect.options].some(
+        o => o.textContent === track.label
+      );
+      if (!alreadyInDropdown) {
+        const option = document.createElement('option');
+        option.value = `native-${subtitleSelect.options.length}`;
+        option.textContent = track.label;
+        subtitleSelect.appendChild(option);
+        subtitleOption.hidden = false;
+      }
+    }
+  });
+
   subtitleSelect.addEventListener('change', () => {
-    [...video.textTracks].forEach((track, index) => {
-      track.mode = index === Number(subtitleSelect.value) ? 'showing' : 'disabled';
-    });
+    const val = subtitleSelect.value;
+    [...video.textTracks].forEach(track => { track.mode = 'disabled'; });
+    if (window.currentHls && window.currentHls.subtitleTrack !== undefined) {
+      window.currentHls.subtitleTrack = -1;
+    }
+    if (val === '-1') return;
+    if (val.startsWith('hls-')) {
+      const hlsIndex = Number(val.replace('hls-', ''));
+      if (window.currentHls) window.currentHls.subtitleTrack = hlsIndex;
+    } else if (val.startsWith('native-')) {
+      const tracks = [...video.textTracks];
+      const nativeTracks = tracks.filter(t => t.kind === 'subtitles' || t.kind === 'captions');
+      const idx = Number(val.replace('native-', ''));
+      const dropdownOpts = [...subtitleSelect.options];
+      const optionIndex = dropdownOpts.findIndex(o => o.value === val);
+      if (optionIndex >= 0) {
+        const apiTrackCount = [...subtitleSelect.options].filter(o => !o.value.startsWith('hls-') && !o.value.startsWith('native-') && o.value !== '-1').length;
+        const nativeTrackIndex = idx - 1 - apiTrackCount;
+        if (nativeTrackIndex >= 0 && nativeTrackIndex < nativeTracks.length) {
+          nativeTracks[nativeTrackIndex].mode = 'showing';
+        }
+      }
+    } else {
+      const trackIndex = Number(val);
+      const tracks = [...video.textTracks];
+      if (trackIndex >= 0 && trackIndex < tracks.length) {
+        tracks[trackIndex].mode = 'showing';
+      }
+    }
+  });
+
+  // Unified audio track switching (HLS.js / transcode / WASM)
+  const audioSelect = document.getElementById('playback-audio');
+  audioSelect.addEventListener('change', () => {
+    const val = Number(audioSelect.value);
+    if (window.currentHls) {
+      window.currentHls.audioTrack = val;
+      return;
+    }
+    if (val < 0 || !window.audioTracks || val >= window.audioTracks.length) return;
+    const streamIdx = window.audioTracks[val].index;
+    // Abort old playback before switching
+    window.__currentAbortController?.abort();
+    window.__currentAbortController = null;
+    fallbackToBackendTranscode(video, streamUrl, route, selectedSource, streamIdx);
   });
 
   const playToggle = document.getElementById('play-toggle-btn');
-  const syncPlayButton = () => { playToggle.textContent = video.paused ? '▶' : 'Ⅱ'; };
+  const playIcon = playToggle.querySelector('.play-icon');
+  const pauseIcon = playToggle.querySelector('.pause-icon');
+  const syncPlayButton = () => {
+    const paused = video.paused;
+    playIcon.style.display = paused ? '' : 'none';
+    pauseIcon.style.display = paused ? 'none' : '';
+  };
   playToggle.addEventListener('click', () => video.paused ? video.play() : video.pause());
   video.addEventListener('play', syncPlayButton);
   video.addEventListener('pause', syncPlayButton);
@@ -1616,10 +1727,21 @@ function renderPlayer() {
       else await video.requestPictureInPicture();
     }
   });
-  document.getElementById('fullscreen-btn').addEventListener('click', () => {
+  const fullscreenBtn = document.getElementById('fullscreen-btn');
+  const fullscreenIcon = fullscreenBtn.querySelector('.fullscreen-icon');
+  const fullscreenExitIcon = fullscreenBtn.querySelector('.fullscreen-exit-icon');
+  fullscreenBtn.addEventListener('click', () => {
     const shell = document.getElementById('player-shell');
-    if (document.fullscreenElement) document.exitFullscreen();
-    else shell.requestFullscreen?.();
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      shell.requestFullscreen?.();
+    }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    const isFullscreen = !!document.fullscreenElement;
+    fullscreenIcon.style.display = isFullscreen ? 'none' : '';
+    fullscreenExitIcon.style.display = isFullscreen ? '' : 'none';
   });
   document.getElementById('change-source-btn').addEventListener('click', () => {
     if (sourceData) showSourcePicker(sourceData, params.title, params.id, params.provider);
@@ -2034,11 +2156,9 @@ async function ensureSubtitlesOctopus() {
   showToast("Styled Subtitle Renderer loaded.");
 }
 
-function getBackendTranscodeUrl(streamUrl, route, source) {
+function getBackendTranscodeUrl(streamUrl, route, source, audioIndex = 0) {
   const caps = checkBrowserCapabilities();
   const supportedVideos = Object.keys(caps.videoCodecs).filter(k => caps.videoCodecs[k]).join(',');
-  // canPlayType() may report AC3/E-AC3 support for native playback, but
-  // those codecs are not safe in the fragmented-MP4/MSE fallback on iPad.
   const safeAudioCodecs = new Set(['aac', 'mp3']);
   const supportedAudios = Object.keys(caps.audioCodecs)
     .filter(k => caps.audioCodecs[k] && safeAudioCodecs.has(k))
@@ -2049,15 +2169,60 @@ function getBackendTranscodeUrl(streamUrl, route, source) {
   return `${API_BASE}/transcode?url=${encodeURIComponent(targetUrl)}` +
     `&referer=${encodeURIComponent(source?.referer || route?.referer || '')}` +
     `&supportedVideoCodecs=${encodeURIComponent(supportedVideos)}` +
-    `&supportedAudioCodecs=${encodeURIComponent(supportedAudios)}`;
+    `&supportedAudioCodecs=${encodeURIComponent(supportedAudios)}` +
+    `&audioIndex=${audioIndex}`;
 }
 
-function fallbackToBackendTranscode(videoElement, streamUrl, route, source) {
-  if (videoElement.dataset.backendTranscodeAttempted === 'true') return false;
-  videoElement.dataset.backendTranscodeAttempted = 'true';
-  showToast('Browser playback failed. Starting server-side remux/transcode...');
+async function probeAudioTracks(streamUrl, route, source) {
+  const targetUrl = streamUrl.startsWith('/')
+    ? streamUrl
+    : new URL(streamUrl, window.location.origin).href;
+  const probeUrl = `${API_BASE}/probe?url=${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(source?.referer || route?.referer || '')}`;
+  try {
+    const res = await fetch(probeUrl);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.audioStreams || [];
+  } catch (e) {
+    serverLog('WARN', 'AudioProbe', `Probe failed: ${e?.message || e}`);
+    return [];
+  }
+}
+
+function populateAudioDropdown(tracks) {
+  const select = document.getElementById('playback-audio');
+  const option = document.getElementById('audio-option');
+  if (!select || !option) return;
+  select.innerHTML = '';
+  if (!tracks || tracks.length < 2) { option.hidden = true; return; }
+  tracks.forEach((track, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    const label = track.title || track.language || track.name || `Audio ${i + 1}`;
+    opt.textContent = track.language && track.language !== label ? `${label} (${track.language})` : label;
+    select.appendChild(opt);
+  });
+  option.hidden = false;
+}
+
+function fallbackToBackendTranscode(videoElement, streamUrl, route, source, audioIndex = 0) {
+  if (audioIndex === 0 && videoElement.dataset.backendTranscodeAttempted === 'true') return false;
+  if (audioIndex === 0) videoElement.dataset.backendTranscodeAttempted = 'true';
   
-  const transcodeUrl = getBackendTranscodeUrl(streamUrl, route, source);
+  showToast(audioIndex > 0 ? 'Switching audio track...' : 'Browser playback failed. Starting server-side remux/transcode...');
+  
+  const transcodeUrl = getBackendTranscodeUrl(streamUrl, route, source, audioIndex);
+  
+  // Fire-and-forget probe for audio track discovery (only on first call)
+  if (audioIndex === 0) {
+    probeAudioTracks(streamUrl, route, source).then(tracks => {
+      if (tracks.length > 1) {
+        populateAudioDropdown(tracks);
+        window.audioTracks = tracks;
+      }
+    });
+  }
+  
   const MediaSourceCtor = window.ManagedMediaSource || window.MediaSource;
 
   if (MediaSourceCtor) {
@@ -2071,6 +2236,7 @@ function fallbackToBackendTranscode(videoElement, streamUrl, route, source) {
 function playViaDirectSrc(videoElement, url) {
   videoElement.src = url;
   videoElement.load();
+  videoElement.play().catch(e => serverLog('WARN', 'DirectSrc', `play() failed: ${e.message}`));
   videoElement.addEventListener('error', () => {
     showToast('Server-side transcoding failed. The source may require a different provider.');
   }, { once: true });
@@ -2102,6 +2268,7 @@ async function playViaMediaSource(videoElement, transcodeUrl, MediaSourceCtor) {
   const mediaSource = new MediaSourceCtor();
   const isMMS = MediaSourceCtor === window.ManagedMediaSource;
   const abortController = new AbortController();
+  window.__currentAbortController = abortController;
 
   let sourceElement = null;
   if (isMMS) {
@@ -2116,6 +2283,7 @@ async function playViaMediaSource(videoElement, transcodeUrl, MediaSourceCtor) {
     serverLog('INFO', 'MSEPlayback', 'Using classic MediaSource');
   }
   videoElement.load();
+  videoElement.play().catch(e => serverLog('WARN', 'MSEPlayback', `play() failed: ${e.message}`));
 
   function cleanup() {
     try {
@@ -2303,9 +2471,28 @@ async function initiateWasmPlayback(videoElement, streamUrl, route, subtitles = 
       // Load container headers and analyze streams
       const [fmt_ctx, streams] = await libav.ff_init_demuxer_file(fileName);
 
-      // Find audio and video tracks
+      // Find video stream and all audio streams
       const videoStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_VIDEO);
-      const audioStream = streams.find(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO);
+      const audioStreams = streams.filter(s => s.codec_type === libav.AVMEDIA_TYPE_AUDIO);
+      const audioStream = audioStreams[0] || null;
+
+      // Discover and expose multi-audio tracks from WASM demuxer
+      if (audioStreams.length > 1) {
+        const wasmTracks = [];
+        for (let i = 0; i < audioStreams.length; i++) {
+          const s = audioStreams[i];
+          const codecName = await libav.avcodec_get_name(s.codec_id);
+          wasmTracks.push({
+            index: s.index,
+            name: `Audio ${i + 1}`,
+            language: (s.tags && s.tags.language) || '',
+            title: (s.tags && s.tags.title) || '',
+            codec: codecName
+          });
+        }
+        populateAudioDropdown(wasmTracks);
+        window.audioTracks = wasmTracks;
+      }
 
        const vCodecName = videoStream ? await libav.avcodec_get_name(videoStream.codec_id) : 'none';
        const aCodecName = audioStream ? await libav.avcodec_get_name(audioStream.codec_id) : 'none';

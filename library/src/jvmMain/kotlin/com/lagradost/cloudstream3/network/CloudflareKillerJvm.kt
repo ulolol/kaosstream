@@ -31,7 +31,7 @@ class CloudflareKillerJvm : Interceptor {
         private val ERROR_CODES = listOf(403, 503)
         private val CLOUDFLARE_SERVERS = listOf("cloudflare-nginx", "cloudflare")
         private val CHALLENGE_HEADER_PREFIX = "cf-chl-"
-        private const val CHALLENGE_TIMEOUT_MS = 3_000L
+        private const val CHALLENGE_TIMEOUT_MS = 30_000L
         private const val REQUEST_TIMEOUT_MS = 30_000
 
         // Deduplication: tracks in-flight challenge solves per host
